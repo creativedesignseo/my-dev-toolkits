@@ -1,0 +1,32 @@
+{
+  "name": "@your-name/image-optimizer-toolkit",
+  "version": "1.0.0",
+  "description": "Sistema de optimización automática de imágenes para proyectos web. Convierte PNG/JPG a WebP con 90-95% de reducción de tamaño.",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "convert-to-webp": "node scripts/convert-to-webp.js",
+    "optimize-images": "node scripts/optimize-images.js",
+    "clean-duplicates": "node scripts/clean-duplicates.js"
+  },
+  "keywords": [
+    "image",
+    "optimization",
+    "webp",
+    "sharp",
+    "vite",
+    "performance"
+  ],
+  "author": "Your Name",
+  "license": "MIT",
+  "dependencies": {
+    "sharp": "^0.33.0"
+  },
+  "devDependencies": {
+    "vite-plugin-image-optimizer": "^1.1.8",
+    "vite-imagetools": "^7.0.4"
+  },
+  "peerDependencies": {
+    "vite": "^6.0.0"
+  }
+}
