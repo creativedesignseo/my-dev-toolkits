@@ -6,6 +6,7 @@
   "type": "module",
   "scripts": {
     "convert-to-webp": "node scripts/convert-to-webp.js",
+    "generate-assets": "node scripts/generate-assets.js",
     "optimize-images": "node scripts/optimize-images.js",
     "clean-duplicates": "node scripts/clean-duplicates.js"
   },

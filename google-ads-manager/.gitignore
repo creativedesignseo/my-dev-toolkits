@@ -1,0 +1,7 @@
+node_modules
+google-ads.yaml
+.env
+*.log
+API_Tool_Design_Document.md
+API_Tool_Design_Document.pdf
+API_Tool_Design_Document - copia.pdf

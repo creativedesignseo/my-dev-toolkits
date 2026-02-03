@@ -94,10 +94,30 @@ export default defineConfig({
 
 ## 🚀 Uso
 
-### Convertir imágenes a WebP
+### 🏭 Fábrica de Assets (NUEVO)
+Genera automáticamente múltiples variantes optimizadas (móvil, tablet, desktop) desde tus imágenes "raw".
 
 ```bash
-# Convertir solo imágenes nuevas (recomendado)
+# 1. Poner imágenes originales en src/assets/raw/
+# 2. Ejecutar generador
+npm run generate-assets
+
+# MODO ESCUCHA (Recomendado):
+# Mantiene la terminal abierta y procesa automáticamente al arrastrar imágenes
+npm run generate-assets -- --watch
+```
+
+**Ventajas:**
+*   Genera variantes exactas por perfiles (hero, card, thumb)
+*   Soporta `.jpg`, `.png`, `.webp` y `.avif`
+*   Cache Inteligente: No reprocesa si no hay cambios
+*   Recorte automático de alta calidad
+
+### Convertir imágenes a WebP
+Si solo quieres convertir archivos sueltos en tu carpeta de assets actual:
+
+```bash
+# Convertir solo imágenes nuevas
 npm run convert-to-webp
 
 # Forzar reconversión de todas

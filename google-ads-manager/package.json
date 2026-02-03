@@ -1,0 +1,24 @@
+{
+  "name": "google-ads-mcp-nodejs",
+  "version": "1.0.0",
+  "description": "Powerful Google Ads MCP Server implementation in Node.js",
+  "main": "mcp-server.js",
+  "scripts": {
+    "start": "node mcp-server.js",
+    "test": "node test-connection.js",
+    "auth": "node get-refresh-token.js"
+  },
+  "keywords": [
+    "mcp",
+    "google-ads",
+    "api",
+    "automation"
+  ],
+  "author": "Antigravity AI",
+  "license": "MIT",
+  "dependencies": {
+    "google-ads-api": "^17.1.0",
+    "js-yaml": "^4.1.0",
+    "open": "^8.4.2"
+  }
+}

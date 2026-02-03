@@ -1,0 +1,5 @@
+**/node_modules
+**/credentials.json
+**/*.yaml
+.env
+.DS_Store
