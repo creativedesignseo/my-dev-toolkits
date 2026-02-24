@@ -1,6 +1,6 @@
 {
   "name": "google-tag-manager-mcp",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "MCP Server para Google Tag Manager",
   "main": "mcp-server.js",
   "scripts": {

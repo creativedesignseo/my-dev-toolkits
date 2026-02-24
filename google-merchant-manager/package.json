@@ -1,0 +1,16 @@
+{
+  "name": "google-merchant-mcp",
+  "version": "1.0.0",
+  "description": "MCP Server para Google Merchant Center",
+  "main": "mcp-server.js",
+  "scripts": {
+    "start": "node mcp-server.js",
+    "auth": "node get-refresh-token.js"
+  },
+  "dependencies": {
+    "google-auth-library": "^9.0.0",
+    "googleapis": "^140.0.0",
+    "open": "^10.0.0",
+    "server-destroy": "^1.0.1"
+  }
+}

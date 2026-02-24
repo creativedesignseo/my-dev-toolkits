@@ -14,7 +14,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## Image Optimizer
+## Toolkits & MCP Servers
+
+### [1.1.0] - 2026-02-23
+
+#### Added
+- Google Merchant Center MCP Server (`google-merchant-manager`)
+- Google Tag Manager MCP Server (`google-tag-manager`)
+- Google Analytics 4 MCP Server (`google-analytics-manager`)
+- Google Ads MCP Server (`google-ads-manager`)
+- Implemented `list_products` and `get_product` for Merchant Center.
+- Implemented core entity browsing and updates for Tag Manager API.
+- Added API endpoints for registering Conversion Events dynamically in GA4.
+
+---
 
 ### [1.0.0] - 2025-12-26
 

@@ -3,3 +3,6 @@
 **/*.yaml
 .env
 .DS_Store
+*.txt
+*test*.js
+build/

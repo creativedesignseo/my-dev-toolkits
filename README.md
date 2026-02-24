@@ -20,6 +20,65 @@ Personal collection of reusable development tools and utilities.
 
 ---
 
+### 2. **Shopify Admin MCP** (`shopify-admin-mcp/`)
+**Version:** 1.0.0
+**Description:** MCP Server for Shopify Admin GraphQL API
+**Status:** ✅ Production Ready
+
+**Features:**
+- Search products
+- Create products with variants
+- Update inventory
+- Bulk operations
+
+[📖 Documentation](shopify-admin-mcp/README.md)
+
+---
+
+### 3. **Google Merchant Center MCP** (`google-merchant-manager/`)
+**Version:** 1.0.0
+**Description:** MCP Server for Google Content API for Shopping
+**Status:** ✅ Production Ready
+
+**Features:**
+- `list_products`: Get active inventory from a specific Merchant ID
+- `get_product`: Get specific product details by ID
+
+---
+
+### 4. **Google Tag Manager MCP** (`google-tag-manager/`)
+**Version:** 1.0.0
+**Description:** MCP Server for interacting with GTM accounts, containers, workspaces and tags
+**Status:** ✅ Production Ready
+
+**Features:**
+- List Accounts, Containers, Workspaces, Tags, Versions
+- Read and Update Tags dynamically via API
+
+---
+
+### 5. **Google Analytics MCP** (`google-analytics-manager/`)
+**Version:** 1.0.0
+**Description:** MCP Server for Google Analytics 4 Management API
+**Status:** ✅ Production Ready
+
+**Features:**
+- `list_accounts` & `list_properties`
+- `create_conversion_event` to programmatically set Key Events
+- Standard Reports generation
+
+---
+
+### 6. **Google Ads MCP** (`google-ads-manager/`)
+**Version:** 1.0.0
+**Description:** MCP Server for Google Ads API
+**Status:** 🚧 In Development
+
+**Features:**
+- Querying Google Ads accounts and structure
+
+---
+
 ## 🚀 Quick Start
 
 ### Clone this repository:

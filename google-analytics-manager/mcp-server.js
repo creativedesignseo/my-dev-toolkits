@@ -130,6 +130,28 @@ const tools = {
             });
             return { status: 'created', name: conversion.name };
         } catch (e) { return { error: e.message }; }
+    },
+
+    // Listar Enlaces de Google Ads
+    async listGoogleAdsLinks(propertyId) {
+        try {
+            const [links] = await adminClient.listGoogleAdsLinks({ parent: `properties/${propertyId}` });
+            return links;
+        } catch (e) { return { error: e.message }; }
+    },
+
+    // Crear Enlace de Google Ads
+    async createGoogleAdsLink(propertyId, customerId) {
+        try {
+            const [link] = await adminClient.createGoogleAdsLink({
+                parent: `properties/${propertyId}`,
+                googleAdsLink: {
+                    customerId: customerId.replace(/-/g, ''), // Eliminar guiones
+                    adsPersonalizationEnabled: { value: true }
+                }
+            });
+            return link;
+        } catch (e) { return { error: e.message }; }
     }
 };
 
@@ -169,7 +191,9 @@ rl.on('line', async (line) => {
                         { name: 'create_property_setup', description: 'Crea una nueva propiedad GA4 + Flujo de datos Web', inputSchema: { type: 'object', properties: { account_id: { type: 'string', description: 'ID de la cuenta padre (ej: accounts/123456)' }, domain: { type: 'string', description: 'Dominio del sitio web (ej: ejemplo.com)' }, display_name: { type: 'string', description: 'Nombre visible de la propiedad' } }, required: ['account_id', 'domain'] } },
                         { name: 'run_report', description: 'Ejecuta un reporte histórico personalizado', inputSchema: { type: 'object', properties: { property_id: { type: 'string' }, start_date: { type: 'string' }, end_date: { type: 'string' }, metrics: { type: 'array', items: { type: 'string' } }, dimensions: { type: 'array', items: { type: 'string' } } }, required: ['property_id'] } },
                         { name: 'run_realtime_report', description: 'Muestra usuarios en tiempo real', inputSchema: { type: 'object', properties: { property_id: { type: 'string' } }, required: ['property_id'] } },
-                        { name: 'create_conversion_event', description: 'Marca un evento como Key Event (Conversión)', inputSchema: { type: 'object', properties: { property_id: { type: 'string' }, event_name: { type: 'string' } }, required: ['property_id', 'event_name'] } }
+                        { name: 'create_conversion_event', description: 'Marca un evento como Key Event (Conversión)', inputSchema: { type: 'object', properties: { property_id: { type: 'string' }, event_name: { type: 'string' } }, required: ['property_id', 'event_name'] } },
+                        { name: 'list_google_ads_links', description: 'Lista las vinculaciones con Google Ads de una propiedad', inputSchema: { type: 'object', properties: { property_id: { type: 'string' } }, required: ['property_id'] } },
+                        { name: 'create_google_ads_link', description: 'Vincula una cuenta de Google Ads con la propiedad de Analytics', inputSchema: { type: 'object', properties: { property_id: { type: 'string', description: 'ID de la propiedad de Analytics' }, customer_id: { type: 'string', description: 'ID de la cuenta de Google Ads (con o sin guiones)' } }, required: ['property_id', 'customer_id'] } }
                     ]
                 };
                 break;
@@ -185,6 +209,8 @@ rl.on('line', async (line) => {
                         case 'run_report': result = await tools.runReport(args.property_id, args.start_date, args.end_date, args.metrics, args.dimensions); break;
                         case 'run_realtime_report': result = await tools.runRealtimeReport(args.property_id, args.metrics, args.dimensions); break;
                         case 'create_conversion_event': result = await tools.createConversionEvent(args.property_id, args.event_name); break;
+                        case 'list_google_ads_links': result = await tools.listGoogleAdsLinks(args.property_id); break;
+                        case 'create_google_ads_link': result = await tools.createGoogleAdsLink(args.property_id, args.customer_id); break;
                         default: throw new Error('Herramienta desconocida');
                     }
                     res = { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };

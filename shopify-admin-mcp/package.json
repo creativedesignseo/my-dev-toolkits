@@ -1,0 +1,32 @@
+{
+  "name": "shopify-admin-mcp",
+  "version": "1.0.0",
+  "description": "MCP Server for Shopify Admin GraphQL API",
+  "main": "build/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node build/index.js",
+    "dev": "ts-node src/index.ts"
+  },
+  "keywords": [
+    "mcp",
+    "shopify",
+    "graphql",
+    "ai"
+  ],
+  "author": "Antigravity",
+  "license": "ISC",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^0.6.0",
+    "axios": "^1.6.0",
+    "dotenv": "^16.3.1",
+    "graphql": "^16.8.0",
+    "graphql-request": "^6.1.0",
+    "zod": "^3.22.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "ts-node": "^10.9.0",
+    "typescript": "^5.0.0"
+  }
+}
