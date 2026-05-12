@@ -217,12 +217,81 @@ Si por error commiteas un secreto:
 
 ---
 
+---
+
+## 📊 CLI `ga4` — Google Analytics 4
+
+Mismo patrón que `gmail`. Funciona contra dos APIs:
+
+- **Admin API** (`analyticsadmin v1beta`) — listar cuentas y propiedades
+- **Data API** (`analyticsdata v1beta`) — reportes históricos y realtime
+
+```bash
+# Listar todas las cuentas GA accesibles
+ga4 list-accounts --account creativedesignseo@gmail.com
+
+# Listar propiedades GA4 (todas o filtrando por account-id)
+ga4 list-properties --account creativedesignseo@gmail.com
+ga4 list-properties --account creativedesignseo@gmail.com --account-id 244866621
+
+# Reporte histórico (cualquier métrica + dimensión válida de GA4)
+ga4 report \
+  --account creativedesignseo@gmail.com \
+  --property 534094689 \
+  --metrics sessions,activeUsers,conversions \
+  --dimensions sessionDefaultChannelGroup \
+  --since 7daysAgo --until today
+
+# Realtime (usuarios activos AHORA, últimos ~30 min)
+ga4 realtime \
+  --account creativedesignseo@gmail.com \
+  --property 534094689 \
+  --metrics activeUsers \
+  --dimensions country
+```
+
+**Métricas más usadas**: `sessions`, `activeUsers`, `newUsers`, `conversions`, `engagementRate`, `screenPageViews`, `eventCount`, `averageSessionDuration`.
+
+**Dimensiones más usadas**: `sessionDefaultChannelGroup`, `country`, `city`, `deviceCategory`, `pagePath`, `eventName`, `date`.
+
+Referencia: [GA4 Data API metrics & dimensions](https://developers.google.com/analytics/devguides/reporting/data/v1/api-schema)
+
+---
+
+## 🔍 CLI `gsc` — Search Console
+
+```bash
+# Listar todos los sitios verificados desde tu cuenta
+gsc list-sites --account creativedesignseo@gmail.com
+
+# Top queries (keywords) del último mes
+gsc queries \
+  --account creativedesignseo@gmail.com \
+  --site sc-domain:elrecolector.es \
+  --since 30daysAgo --limit 25
+
+# Top páginas
+gsc pages --account creativedesignseo@gmail.com --site sc-domain:elrecolector.es --limit 10
+
+# Posición media para palabras clave específicas
+gsc positions \
+  --account creativedesignseo@gmail.com \
+  --site sc-domain:elrecolector.es \
+  --keywords "vaciado pisos","recogida muebles barcelona"
+```
+
+**Formato del `--site`**:
+- Domain property: `sc-domain:example.com` (sin protocolo)
+- URL prefix: `https://www.example.com/` (con barra final)
+
+Tienes que poner el sitio **exactamente como está registrado** en Search Console.
+
+---
+
 ## 🗺️ Roadmap
 
-Próximos CLIs a construir bajo este mismo paraguas (reutilizando OAuth y `accounts.json`):
+Próximos CLIs siguiendo este mismo patrón:
 
-- [ ] **`ga4`** — Google Analytics 4 (reportes, propiedades, eventos)
-- [ ] **`gsc`** — Google Search Console (keywords, posiciones, CTR)
 - [ ] **`ads`** — Google Ads (campañas, RSAs, negativas — sustituye Playwright)
 - [ ] **`drive`** — Google Drive (subir/bajar archivos)
 - [ ] **`calendar`** — Google Calendar (agendar reuniones)

@@ -20,7 +20,7 @@ Cada carpeta es **una herramienta independiente** que puede usarse por separado.
 
 | 📦 Herramienta | 🎯 Para qué sirve | 🔧 Tipo | ✅ Estado |
 |----------------|-------------------|---------|-----------|
-| [**google-apis**](#-google-apis--cli-directo-a-las-apis-de-google) | Mandar correos, ver Gmail (próximamente Analytics, Ads, Search Console) sin depender de MCPs frágiles | CLI Python | 🟢 En producción |
+| [**google-apis**](#-google-apis--cli-directo-a-las-apis-de-google) | CLI directos a Gmail, Google Analytics 4 y Search Console (sin MCPs frágiles) | CLI Python | 🟢 En producción |
 | [**google-ads-manager**](#-google-ads-manager) | Servidor MCP para que la IA gestione campañas de Google Ads | MCP Node.js | 🟡 En migración |
 | [**google-analytics-manager**](#-google-analytics-manager) | Servidor MCP para consultar datos de Google Analytics 4 | MCP Node.js | 🟡 En migración |
 | [**google-tag-manager**](#-google-tag-manager) | Servidor MCP para configurar Google Tag Manager | MCP Node.js | 🟢 En producción |
@@ -36,9 +36,11 @@ Cada carpeta es **una herramienta independiente** que puede usarse por separado.
 
 ### ⭐ google-apis — CLI directo a las APIs de Google
 
-📁 [`google-apis/`](google-apis/) · **Versión 1.0.0** · ✅ En producción
+📁 [`google-apis/`](google-apis/) · **Versión 1.1.0** · ✅ En producción
 
-**Qué hace en una frase**: te permite mandar y leer correos de Gmail desde la terminal o desde scripts, sin pasar por los conectores MCP que se caían cada par de días.
+**Qué hace en una frase**: te permite usar Gmail, **Google Analytics 4** y **Search Console** desde la terminal o desde scripts, sin pasar por los conectores MCP que se caían cada par de días.
+
+**CLIs disponibles ahora mismo**: `gmail`, `ga4`, `gsc`.
 
 **Por qué existe**: durante meses dependíamos de un MCP externo de Gmail que daba errores `403` constantemente — perdíamos horas reconectándolo. Aquí montamos una conexión **directa** a la API oficial de Google con OAuth 2.0, los tokens se refrescan solos y soporta cosas que el MCP no podía (adjuntos de PDFs, alias "Send as", multi-cuenta).
 

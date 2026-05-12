@@ -17,11 +17,59 @@ El formato sigue [Keep a Changelog](https://keepachangelog.com/es-ES/1.0.0/) y e
 ## [Sin publicar]
 
 ### Planeado
-- CLIs Python siblings dentro de `google-apis/` para Google Analytics 4 (`ga4`), Search Console (`gsc`) y Google Ads (`ads`).
+- `ads` CLI Python dentro de `google-apis/` para Google Ads (sustituye Playwright).
 - Migración progresiva de los MCP de Node.js (`google-ads-manager`, `google-analytics-manager`, `google-tag-manager`, `google-merchant-manager`) al patrón de `google-apis/`.
-- README pendiente dentro de `google-merchant-manager/`.
 - Toolkit de SEO (auditorías técnicas, Lighthouse batch).
 - Scripts de deployment a Netlify / Vercel.
+
+---
+
+## [2.1.0] — 12 de mayo de 2026 (tarde)
+
+> Ampliación del paquete `google-apis/` con dos CLIs más: GA4 y Search Console.
+> El módulo de OAuth se refactoriza para soportar **scopes incrementales** (el token
+> se va ampliando según se necesite, sin romper lo ya autorizado).
+
+### 🟢 Añadido
+
+- **`google-apis/_auth.py`** — módulo compartido de autenticación OAuth 2.0.
+  - Registro centralizado de scopes (`SCOPES` dict).
+  - Función `get_credentials(account, required_scopes)` que detecta scopes faltantes
+    y re-lanza el OAuth flow con la UNIÓN de lo ya granted + lo nuevo.
+  - Función `service(account, api, version, scopes)` para construir cualquier servicio Google.
+- **`google-apis/ga4_cli.py`** — CLI para Google Analytics 4.
+  - `ga4 login` — autoriza scopes `analytics.readonly`.
+  - `ga4 list-accounts` — lista todas las cuentas GA accesibles.
+  - `ga4 list-properties [--account-id N]` — lista propiedades GA4 (iterando cuenta por cuenta).
+  - `ga4 report` — reportes históricos con métricas/dimensiones libres, rango de fechas, orden y límite.
+  - `ga4 realtime` — usuarios activos en los últimos ~30 min.
+  - Salida con tabla bonita por defecto, JSON con `--json`.
+- **`google-apis/gsc_cli.py`** — CLI para Search Console.
+  - `gsc login` — autoriza scopes `webmasters.readonly`.
+  - `gsc list-sites` — todos los sitios verificados (con nivel de permiso: owner / full / restricted / unverified).
+  - `gsc queries` — top palabras clave con clics, impresiones, CTR, posición.
+  - `gsc pages` — top páginas con las mismas métricas.
+  - `gsc positions --keywords X,Y,Z` — posición media de keywords concretas.
+  - Soporte de fechas relativas (`30daysAgo`, `today`, `yesterday`).
+- **`google-apis/bin/ga4`** y **`google-apis/bin/gsc`** — wrappers bash.
+- Symlinks globales `~/.local/bin/ga4` y `~/.local/bin/gsc`.
+
+### 🔄 Cambiado
+
+- **`gmail_cli.py`** refactorizado para importar el módulo `_auth.py` compartido (sin cambios funcionales).
+- README de `google-apis/` ampliado con secciones GA4 y GSC.
+- `~/.claude/CLAUDE.md` y `~/.claude/skills/google-apis/SKILL.md` actualizados — la skill ahora reconoce los 3 CLIs.
+
+### 🔐 Seguridad
+
+- Token de `creativedesignseo@gmail.com` autorizado con scopes `analytics.readonly` + `webmasters.readonly`. El refresh es automático.
+- Verificado: ningún `client_secret*.json` ni `token*.json` entra al stage.
+
+### ✅ Validación con datos reales
+
+- GA4 lista 39 cuentas accesibles (incluyendo cliente "vaciado de pisos elrecolector.es", property `534094689`).
+- Reporte 7 días de Trayec: 107 sesiones Paid Search, 0 conversiones — confirma diagnóstico previo.
+- Search Console lista 17 sitios verificados (incluyendo `sc-domain:elrecolector.es` con permiso Owner).
 
 ---
 

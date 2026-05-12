@@ -15,93 +15,18 @@ import argparse
 import base64
 import json
 import mimetypes
-import os
 import sys
 from email.message import EmailMessage
 from pathlib import Path
 
-from google.auth.transport.requests import Request
-from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
-from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
-# ── Paths ───────────────────────────────────────────────────────────────────
-ROOT = Path(__file__).resolve().parent
-CREDS_DIR = ROOT / "credentials"
-TOKENS_DIR = CREDS_DIR / "tokens"
-ACCOUNTS_MAP = ROOT / "accounts.json"
-TOKENS_DIR.mkdir(parents=True, exist_ok=True)
-
-# Full Gmail access (send, read, modify drafts). Adjust if you want narrower.
-SCOPES = ["https://mail.google.com/"]
-
-
-def client_secret_for(account: str) -> Path:
-    """Pick the right client_secret based on accounts.json mapping."""
-    if not ACCOUNTS_MAP.exists():
-        sys.exit(f"❌ Missing {ACCOUNTS_MAP}")
-    mapping = json.loads(ACCOUNTS_MAP.read_text())
-    fname = mapping.get(account) or mapping.get("_default")
-    if not fname:
-        sys.exit(
-            f"❌ No client_secret mapped for {account}. "
-            f"Edit {ACCOUNTS_MAP} to add it."
-        )
-    path = CREDS_DIR / fname
-    if not path.exists():
-        sys.exit(f"❌ {path} not found (referenced from accounts.json for {account})")
-    return path
-
-
-# ── Auth helpers ────────────────────────────────────────────────────────────
-def token_path(account: str) -> Path:
-    safe = account.replace("@", "_at_").replace(".", "_")
-    return TOKENS_DIR / f"{safe}.json"
-
-
-def get_credentials(account: str) -> Credentials:
-    """Load or refresh credentials for the given account."""
-    tp = token_path(account)
-    creds: Credentials | None = None
-
-    if tp.exists():
-        creds = Credentials.from_authorized_user_file(str(tp), SCOPES)
-
-    if creds and creds.valid:
-        return creds
-
-    if creds and creds.expired and creds.refresh_token:
-        try:
-            creds.refresh(Request())
-            tp.write_text(creds.to_json())
-            return creds
-        except Exception as e:
-            print(f"⚠️  Refresh failed for {account}: {e}", file=sys.stderr)
-            print(f"   Re-running OAuth flow...", file=sys.stderr)
-
-    # Initial OAuth (or refresh failed): launch local server flow
-    cs = client_secret_for(account)
-    print(f"🔑 Using OAuth client: {cs.name}", file=sys.stderr)
-    flow = InstalledAppFlow.from_client_secrets_file(str(cs), SCOPES)
-    # login_hint guides Google to the right account picker
-    creds = flow.run_local_server(
-        port=0,
-        prompt="consent",
-        login_hint=account,
-        access_type="offline",
-        open_browser=True,
-        authorization_prompt_message=(
-            "🔑 Open this URL in your browser to authorize:\n{url}"
-        ),
-        success_message="✅ Auth complete — you can close this tab.",
-    )
-    tp.write_text(creds.to_json())
-    return creds
+# Shared auth helpers (token storage, OAuth flow, incremental scopes)
+from _auth import SCOPES, get_credentials, service, token_path
 
 
 def gmail_service(account: str):
-    return build("gmail", "v1", credentials=get_credentials(account), cache_discovery=False)
+    return service(account, "gmail", "v1", SCOPES["gmail"])
 
 
 # ── Message builder ─────────────────────────────────────────────────────────
@@ -148,7 +73,7 @@ def build_message(args) -> str:
 
 # ── Subcommands ─────────────────────────────────────────────────────────────
 def cmd_login(args):
-    get_credentials(args.account)
+    get_credentials(args.account, SCOPES["gmail"])
     print(f"✅ Logged in as {args.account}")
     print(f"   Token: {token_path(args.account)}")
 
