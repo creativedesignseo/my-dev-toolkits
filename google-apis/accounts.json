@@ -1,0 +1,9 @@
+{
+  "_comment": "Map: email account → which OAuth client_secret to use. Add new accounts here.",
+  "_note_send_as": "info@adspubli.com is a 'Send as' alias of info@one.adspubli.com (same inbox). Authenticate with info@one.adspubli.com and use --from info@adspubli.com when sending.",
+
+  "info@one.adspubli.com":       "client_secret_adspubli.json",
+  "creativedesignseo@gmail.com": "client_secret_amsip.json",
+
+  "_default": "client_secret_adspubli.json"
+}

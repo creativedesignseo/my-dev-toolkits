@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Wrapper that runs gmail_cli.py inside the project venv.
+# Resolves through symlinks so it works from ~/.local/bin or anywhere.
+set -e
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+  DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  [[ $SOURCE != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+HERE="$(cd -P "$(dirname "$SOURCE")/.." && pwd)"
+exec "$HERE/.venv/bin/python" "$HERE/gmail_cli.py" "$@"

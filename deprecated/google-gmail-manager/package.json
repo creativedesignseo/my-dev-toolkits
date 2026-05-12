@@ -1,0 +1,9 @@
+{
+  "name": "google-gmail-manager",
+  "version": "1.0.0",
+  "description": "MCP server for Gmail management",
+  "main": "mcp-server.js",
+  "dependencies": {
+    "googleapis": "^144.0.0"
+  }
+}

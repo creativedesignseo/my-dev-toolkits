@@ -1,8 +1,34 @@
+## Node / JS
 **/node_modules
-**/credentials.json
-**/*.yaml
+**/package-lock.json.bak
+
+## Python
+**/.venv/
+**/venv/
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+
+## Secrets — NEVER commit any of these
 .env
+**/credentials.json
+**/client_secret*.json
+**/credentials/client_secret*.json
+**/credentials/tokens/
+**/token.json
+**/workspace_token.json
+**/google-ads.yaml
+**/google-analytics.yaml
+**/*.yaml
+**/refresh_token.json
+
+## OS
 .DS_Store
-*.txt
-*test*.js
+Thumbs.db
+
+## Misc
 build/
+*test*.js
+
+## Allow our explicit gitignore inside credentials folders (so the folder structure is committed)
+!**/credentials/.gitignore
