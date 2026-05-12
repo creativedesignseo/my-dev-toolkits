@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Wrapper for gtm_cli.py — resolves symlinks correctly so the venv is always found.
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+  DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  [[ $SOURCE != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+HERE="$(cd -P "$(dirname "$SOURCE")/.." && pwd)"
+exec "$HERE/.venv/bin/python" "$HERE/gtm_cli.py" "$@"

@@ -36,6 +36,9 @@ SCOPES = {
     "analytics_readonly":  ["https://www.googleapis.com/auth/analytics.readonly"],
     "webmasters_readonly": ["https://www.googleapis.com/auth/webmasters.readonly"],
     "drive_readonly":      ["https://www.googleapis.com/auth/drive.readonly"],
+    "tagmanager_readonly": ["https://www.googleapis.com/auth/tagmanager.readonly"],
+    "tagmanager_edit":     ["https://www.googleapis.com/auth/tagmanager.edit.containers",
+                            "https://www.googleapis.com/auth/tagmanager.publish"],
 }
 
 
