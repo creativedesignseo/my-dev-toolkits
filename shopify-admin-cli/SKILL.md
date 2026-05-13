@@ -3,23 +3,69 @@ name: shopify-admin
 description: |
   Use this skill for ANY task involving Shopify store data via Admin GraphQL API:
   products, customers, orders, draft orders, companies (B2B), catalogs, price lists,
-  markets, and publications. Uses the `shopify-admin` CLI — zero dependencies, never
-  crashes. Triggers when the user wants to query or mutate Shopify store data
+  markets, and publications. Uses the `shopify-admin` CLI — direct HTTP to Shopify's
+  official Admin API, zero dependencies, no server process, never crashes.
+  Triggers when the user wants to query or mutate Shopify store data
   programmatically without touching the theme (use `shopify` CLI for themes).
 ---
 
 # shopify-admin CLI — Adspubli Toolkit
 
-## Conceptual map — dos CLIs distintos, no confundir
+## Qué es y por qué NO es un MCP
+
+`shopify-admin` es una **herramienta de acceso directo a la Admin GraphQL API oficial
+de Shopify**. No es un MCP, no es un servidor, no tiene protocolo intermedio.
+
+```
+shopify-admin product list
+        ↓
+  python3 shopify_admin.py   (proceso puntual, vive 200ms y muere)
+        ↓
+  POST /admin/api/2025-04/graphql.json   ← llamada HTTP directa
+  Header: X-Shopify-Access-Token: shpca_...
+        ↓
+  Admin GraphQL API de Shopify   ← la misma API que usa el propio admin.shopify.com
+```
+
+### CLI directo vs MCP — diferencia arquitectónica
+
+| | MCP server | `shopify-admin` CLI |
+|---|---|---|
+| **Proceso** | Servidor persistente (Node/Python corriendo siempre) | Proceso puntual — arranca, ejecuta, termina |
+| **Protocolo** | JSON-RPC sobre stdio/SSE — capa extra de traducción | HTTP directo al API — sin intermediario |
+| **Fallos** | Se cuelga, pierde conexión, hay que reiniciarlo | No hay servidor que falle — o funciona o da error claro |
+| **Auth** | El MCP gestiona su propio auth (fuente de bugs) | Token en `~/.shopify-admin/config.json` — simple y transparente |
+| **Debug** | Opaco — no ves qué GraphQL envía realmente | `--json` muestra la respuesta cruda del API |
+| **Composable** | Solo funciona como tool de Claude | Pipe a `jq`, bash scripts, cron, CI/CD |
+| **Portabilidad** | Necesita configuración por proyecto en MCP settings | Un binario en `~/.local/bin/` — funciona en cualquier terminal |
+| **Dependencias** | Node.js runtime + npm packages | Python stdlib puro — `urllib`, `json`, `argparse` |
+
+### Comparación de potencia real
+
+```bash
+# Con MCP: dependes de que el server esté corriendo, que Claude lo invoque bien,
+# que el protocolo no falle, que el schema del MCP cubra lo que necesitas.
+
+# Con shopify-admin: control total, sin intermediarios
+shopify-admin product list --query "tag:wholesale" --json | jq '.[] | .id'
+shopify-admin draft-order list --json | jq '[.[] | select(.status=="OPEN")]'
+shopify-admin pricelist create --name "B2B -40%" --discount 40
+```
+
+---
+
+## Los dos CLIs de Shopify — mapa completo
 
 | CLI | Para qué | Autenticación | Alcance |
 |-----|----------|---------------|---------|
-| **`shopify`** (oficial Shopify) | Subir/bajar temas, `theme push/pull/dev` | Partners OAuth (tu cuenta) | Global — cualquier tienda colaboradora |
-| **`shopify-admin`** (nuestro) | Datos vía Admin GraphQL API: productos, pedidos, empresas B2B, etc. | Token `shpca_` por tienda | Por tienda — cada tienda tiene su propio token |
+| **`shopify`** (CLI oficial Shopify) | Temas: `theme push/pull/dev`, scaffold de apps | Partners OAuth (tu cuenta) | Global — cualquier tienda colaboradora |
+| **`shopify-admin`** (cliente directo Admin API) | Datos: productos, pedidos, B2B, catálogos, markets | Token `shpca_` por tienda | Por tienda — cada store tiene su token |
 
-El `shopify` CLI oficial **no puede** hacer llamadas a la Admin GraphQL API de datos
-(solo opera sobre archivos de tema). El `shopify-admin` **solo** hace llamadas API
-(no toca ficheros de tema).
+El `shopify` CLI oficial **no hace queries de datos** (solo opera archivos de tema).
+El `shopify-admin` **no toca el tema** (solo datos vía API).
+
+Shopify no provee un CLI de datos oficial — provee el API REST/GraphQL y cada integración
+decide cómo accederlo. `shopify-admin` es ese cliente, construido sobre el estándar oficial.
 
 ---
 
