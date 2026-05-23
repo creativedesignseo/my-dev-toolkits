@@ -295,8 +295,12 @@ def cmd_company_create(args):
 
     loc_name = args.location or "Principal"
     inp["companyLocation"] = {
-        "name":                 loc_name,
-        "billingSameAsShipping": True,
+        "name":                  loc_name,
+        "billingSameAsShipping":  True,
+        "shippingAddress": {
+            "countryCode": (args.country or "US").upper(),
+            "address1":    args.address or "TBD",
+        },
     }
 
     data   = gql(store, M_COMPANY_CREATE, {"input": inp})
@@ -625,6 +629,89 @@ def cmd_product_list(args):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# VARIANT — variantes con SKU, stock e información necesaria para sync externos
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Filtra a productos ACTIVE por defecto (los DRAFT/ARCHIVED rara vez interesan
+# para sync con Amazon). Variants se devuelven aplanadas con el producto padre.
+Q_VARIANT_LIST = """
+query VariantList($first: Int!, $query: String, $variantsPer: Int!) {
+  products(first: $first, query: $query, sortKey: TITLE) {
+    nodes {
+      id title status handle totalInventory
+      variants(first: $variantsPer) {
+        nodes {
+          id sku title displayName price inventoryQuantity
+          barcode
+        }
+      }
+    }
+    pageInfo { hasNextPage endCursor }
+  }
+}
+"""
+
+
+def cmd_variant_list(args):
+    store = get_store(args.store)
+
+    # Por defecto filtramos status:active para no contaminar el output con drafts.
+    q = args.query or ""
+    if args.status:
+        q_status = f"status:{args.status.lower()}"
+        q = f"({q}) AND {q_status}" if q else q_status
+
+    data  = gql(store, Q_VARIANT_LIST, {
+        "first":       args.limit or 250,
+        "query":       q,
+        "variantsPer": 50,
+    })
+    products = data.get("products", {}).get("nodes", [])
+
+    # Aplanar variantes
+    rows = []
+    for p in products:
+        for v in (p.get("variants", {}).get("nodes") or []):
+            rows.append({
+                "sku":               v.get("sku") or "",
+                "title":             v.get("title") or "",
+                "displayName":       v.get("displayName") or "",
+                "price":             v.get("price"),
+                "inventoryQuantity": v.get("inventoryQuantity"),
+                "barcode":           v.get("barcode") or "",
+                "variantId":         v.get("id"),
+                "productId":         p.get("id"),
+                "productTitle":      p.get("title"),
+                "productStatus":     p.get("status"),
+                "productHandle":     p.get("handle"),
+            })
+
+    if args.json:
+        out_json(rows); return
+
+    n_with_sku = sum(1 for r in rows if r["sku"])
+
+    filter_str = f" (filtro: '{args.query}')" if args.query else ""
+    hr(f"Variantes {args.status or 'todas'}{filter_str}  —  "
+       f"{len(rows)} total ({n_with_sku} con SKU)")
+
+    if not rows:
+        print("  No se encontraron variantes.")
+        return
+
+    print(f"  {'SKU':<24} {'Stock':>6}  {'Precio':>9}  Nombre")
+    print(f"  {'─'*24} {'─'*6}  {'─'*9}  {'─'*40}")
+    for r in rows:
+        sku   = (r["sku"] or "—")[:24]
+        qty   = r["inventoryQuantity"]
+        qty_s = f"{qty:>6}" if qty is not None else "     —"
+        price = r["price"] or "—"
+        name  = (r["displayName"] or r["productTitle"] or "")[:40]
+        print(f"  {sku:<24} {qty_s}  ${price:>8}  {name}")
+    print()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # SHOP INFO (diagnóstico / verificación de conexión)
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -717,6 +804,8 @@ Ejemplos:
     cmp_cr.add_argument("--email",        metavar="EMAIL",  help="Email del contacto principal")
     cmp_cr.add_argument("--contact-name", metavar="NOMBRE", help="Nombre completo del contacto")
     cmp_cr.add_argument("--location",     metavar="NOMBRE", help="Nombre de la sucursal (default: Principal)")
+    cmp_cr.add_argument("--country",      metavar="CC", default="US", help="Codigo de pais ISO (default: US)")
+    cmp_cr.add_argument("--address",      metavar="ADDR", default="TBD", help="Direccion (default: TBD)")
 
     # ── catalog ───────────────────────────────────────────────────────────────────
     cat = sub.add_parser("catalog", help="Ver catálogos B2B")
@@ -753,6 +842,18 @@ Ejemplos:
                          help="Filtro Shopify (ej: 'tag:wholesale' o 'title:collar')")
     prod_ls.add_argument("--limit", type=int, default=30)
 
+    # ── variant ──────────────────────────────────────────────────────────────────
+    var = sub.add_parser("variant", help="Ver variantes (SKU + stock + precio)")
+    var_sub = var.add_subparsers(dest="subcommand", required=True, metavar="SUBCOMMAND")
+    var_ls = var_sub.add_parser("list", help="Listar variantes aplanadas con SKU/stock")
+    var_ls.add_argument("--query", "-q", metavar="QUERY",
+                        help="Filtro Shopify a productos (ej: 'tag:wholesale')")
+    var_ls.add_argument("--status", metavar="STATUS", default="ACTIVE",
+                        choices=["ACTIVE", "DRAFT", "ARCHIVED", ""],
+                        help="Filtrar por status del producto padre (default ACTIVE, '' = todos)")
+    var_ls.add_argument("--limit", type=int, default=250,
+                        help="Maximo de productos a recuperar (default 250)")
+
     # ─────────────────────────────────────────────────────────────────────────────
     args = p.parse_args()
     cmd  = args.command
@@ -773,6 +874,7 @@ Ejemplos:
         ("market",       "list"):    cmd_market_list,
         ("draft-order",  "list"):    cmd_draft_order_list,
         ("product",      "list"):    cmd_product_list,
+        ("variant",      "list"):    cmd_variant_list,
     }
 
     fn = dispatch.get((cmd, sub_))

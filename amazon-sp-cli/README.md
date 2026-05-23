@@ -70,6 +70,8 @@ Marketplace IDs comunes:
 | `amazon-sp reports list` | Reports recientes (filtrado por tipos comunes) | `Reports.get_reports` |
 | `amazon-sp feeds list` | Feeds recientes (default `JSON_LISTINGS_FEED`) | `Feeds.get_feeds` |
 | `amazon-sp feeds submit FILE --type X --confirm` | **DESTRUCTIVO**. Bulk feed. Sin `--confirm` = dry-run. | `Feeds.submit_feed` |
+| `amazon-sp sync` | Cruce Shopify ↔ Amazon: drift, oportunidades, reactivación | shopify-admin + `Inventories` + `Reports` |
+| `amazon-sp sync --emit-feed PATH --product-type X` | Genera JSON_LISTINGS_FEED con price patches (no submite) | (escribe a disco) |
 | `amazon-sp config show` | Credenciales cargadas (enmascaradas) | — |
 
 Flags globales:
@@ -228,10 +230,36 @@ Flags globales:
   ATENCION: este comando MODIFICA tu cuenta Amazon …
 ```
 
+**`amazon-sp sync`** — cruce Shopify ↔ Amazon (validado en producción 23 mayo 2026, Piro × Dream Beauty):
+
+```
+  → 356 variantes Shopify ACTIVE
+  → 20 SKUs FBA en US
+  → 17 listings en Amazon
+
+  Sync Shopify ↔ Amazon (US)
+  En ambos lados      :    0
+  Solo en Shopify     :  333  ← oportunidades de listing
+  Solo en Amazon      :   17  ← orphan / SKU autogenerada
+  Reactivacion        :    0  ← Amazon Inactive + Shopify tiene stock
+
+  ── Solo en Shopify (primeros 10 de 333) ──
+  18399                stock=8    $20.00   DIVINO NINO CHAIN
+  18401                stock=17   $14.00   CANDY GOLD RING - Green
+  ...
+```
+
+> **Caveat de matching**: el cruce es por SKU exacto. En el caso Piro/Dream Beauty los SKUs
+> no coinciden (Shopify: `18399`, Amazon: `DBJ-HRT-GLD-WHT-001`), así que el v1 sirve sobre
+> todo para detectar la oportunidad ("333 productos de Shopify nunca listados en Amazon")
+> y los orphan de Amazon. Para matching real entre catálogos con SKU diferente, próxima
+> iteración: matching por barcode (UPC/EAN) o mapping file manual.
+
 ## Próximos comandos planificados
 
-- `amazon-sp inventory sync --from shopify` — sync Shopify ↔ FBA stock
-- `amazon-sp pricing autorepricer --rules pricing.yaml` — reglas de repricing
+- `amazon-sp sync --mapping FILE` — mapping manual SKU Shopify ↔ SKU Amazon para catálogos no alineados
+- `amazon-sp sync --match-by barcode` — match alternativo por barcode UPC/EAN
+- `amazon-sp pricing autorepricer --rules pricing.yaml` — reglas de repricing automático
 - `amazon-sp reports request <type>` / `get <id>` — descarga ad-hoc de reports
 - `amazon-sp orders cancel` (gated por `--confirm`) — cancelación de pedidos
 - AWS SQS + Notifications API — webhooks en tiempo real cuando volumen > 10/día

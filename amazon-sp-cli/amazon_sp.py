@@ -33,6 +33,8 @@ import csv
 import gzip
 import io
 import json
+import shutil
+import subprocess
 import sys
 import time
 import urllib.request
@@ -1037,6 +1039,348 @@ def cmd_feeds_submit(args):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# SYNC — comparacion Shopify <-> Amazon (Sprint 3, read-only por defecto)
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# Detecta drift entre el catalogo Shopify (source of truth) y Amazon (FBA).
+# Por defecto solo reporta. Con --emit-feed PATH escribe un JSON_LISTINGS_FEED
+# que el usuario puede revisar y submittear con `amazon-sp feeds submit ... --confirm`.
+#
+# Importante: FBA stock NO se sincroniza numericamente — es stock fisico en
+# warehouses de Amazon. Lo unico que el feed actualiza son precios (price drift).
+
+def _pull_shopify_variants(store_alias: str | None) -> list[dict]:
+    """Ejecuta `shopify-admin --json variant list` y devuelve la lista aplanada."""
+    if not shutil.which("shopify-admin"):
+        die(
+            "shopify-admin no esta en PATH. Instala el CLI desde:\n"
+            "    bash ~/Documents/Workspace/mcp-toolkits/repo/shopify-admin-cli/install.sh"
+        )
+
+    cmd = ["shopify-admin", "--json"]
+    if store_alias:
+        cmd.extend(["--store", store_alias])
+    cmd.extend(["variant", "list", "--status", "ACTIVE", "--limit", "250"])
+
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=120)
+    except subprocess.CalledProcessError as e:
+        die(f"shopify-admin fallo (exit {e.returncode}):\n{e.stderr[:600]}")
+    except subprocess.TimeoutExpired:
+        die("shopify-admin timeout (>120s)")
+
+    try:
+        data = json.loads(result.stdout)
+    except json.JSONDecodeError as e:
+        die(f"Output de shopify-admin no es JSON valido: {e}\n{result.stdout[:300]}")
+
+    if not isinstance(data, list):
+        die(f"Output de shopify-admin no es una lista: {type(data).__name__}")
+    return data
+
+
+def _pull_amazon_inventory(creds: dict, marketplace, mid: str) -> list[dict]:
+    """Inventario FBA actual."""
+    from sp_api.api import Inventories
+    client = Inventories(credentials=creds, marketplace=marketplace)
+    result = client.get_inventory_summary_marketplace(
+        details=True,
+        granularityType="Marketplace",
+        granularityId=mid,
+        marketplaceIds=[mid],
+    )
+    return (result.payload or {}).get("inventorySummaries", []) or []
+
+
+def _pull_amazon_listings(creds: dict, marketplace, mid: str) -> list[dict]:
+    """
+    Pull all listings via Reports async flow.
+    Reutiliza la logica de cmd_listings (Reports → poll → download → TSV parse).
+    """
+    from sp_api.api import Reports
+    from sp_api.base.reportTypes import ReportType
+    from sp_api.base.exceptions import SellingApiException
+
+    reports_client = Reports(credentials=creds, marketplace=marketplace)
+
+    try:
+        create_resp = reports_client.create_report(
+            reportType=ReportType.GET_MERCHANT_LISTINGS_ALL_DATA.value,
+            marketplaceIds=[mid],
+        )
+    except SellingApiException as e:
+        die(f"create_report fallo:\n    {e}")
+
+    report_id = (create_resp.payload or {}).get("reportId")
+    if not report_id:
+        die(f"create_report sin reportId: {create_resp.payload}")
+
+    final = _wait_for_report(reports_client, report_id, timeout_s=240, poll_s=10)
+    if final.get("processingStatus") != "DONE":
+        die(f"Report no completo (status={final.get('processingStatus')})")
+
+    doc_id = final.get("reportDocumentId")
+    if not doc_id:
+        return []  # empty report
+
+    try:
+        doc_resp = reports_client.get_report_document(doc_id)
+    except SellingApiException as e:
+        die(f"get_report_document fallo:\n    {e}")
+
+    url         = (doc_resp.payload or {}).get("url")
+    compression = (doc_resp.payload or {}).get("compressionAlgorithm")
+    if not url:
+        die("Document sin URL.")
+
+    with urllib.request.urlopen(url, timeout=60) as r:
+        data = r.read()
+    if compression == "GZIP":
+        data = gzip.decompress(data)
+
+    text   = data.decode("utf-8", errors="replace")
+    reader = csv.DictReader(io.StringIO(text), delimiter="\t")
+    return list(reader)
+
+
+def _compute_sync_drift(shopify_variants: list[dict],
+                       amazon_inv: list[dict],
+                       amazon_listings: list[dict]) -> dict:
+    """
+    Cruza los 3 datasets por SKU exacto y construye 4 buckets:
+      - shopify_only:  SKU en Shopify pero NO en Amazon → oportunidad de listing
+      - amazon_only:   SKU en Amazon pero NO en Shopify → orphan / SKU autogenerada
+      - matched:       SKU en ambos → con price drift, status, qty
+      - reactivation:  Subset de matched: Amazon=Inactive + Shopify tiene stock
+    """
+    # Diccionarios por SKU (filtrar vacios)
+    s_by_sku = {v["sku"]: v for v in shopify_variants if v.get("sku")}
+    a_inv_by_sku = {s["sellerSku"]: s for s in amazon_inv if s.get("sellerSku")}
+    a_list_by_sku = {r.get("seller-sku"): r for r in amazon_listings if r.get("seller-sku")}
+
+    s_skus = set(s_by_sku)
+    a_skus = set(a_list_by_sku)
+    in_both = s_skus & a_skus
+
+    matched = []
+    for sku in sorted(in_both):
+        s = s_by_sku[sku]
+        a_listing = a_list_by_sku[sku]
+        a_inv     = a_inv_by_sku.get(sku, {})
+
+        try:    s_price = float(s.get("price") or 0)
+        except: s_price = 0.0
+        try:    a_price_raw = a_listing.get("price")
+        except: a_price_raw = None
+        try:    a_price = float(a_price_raw) if a_price_raw else None
+        except: a_price = None
+
+        try:    s_qty = int(s.get("inventoryQuantity") or 0)
+        except: s_qty = 0
+        a_qty = ((a_inv.get("inventoryDetails") or {}).get("fulfillableQuantity") or 0)
+
+        price_drift     = (a_price - s_price) if (a_price is not None) else None
+        price_drift_pct = ((a_price - s_price) / s_price * 100) if (a_price and s_price > 0) else None
+
+        matched.append({
+            "sku":             sku,
+            "shopify_title":   s.get("displayName") or s.get("productTitle") or "",
+            "shopify_qty":     s_qty,
+            "shopify_price":   s_price,
+            "amazon_asin":     a_listing.get("asin1") or "",
+            "amazon_status":   a_listing.get("status") or "",
+            "amazon_qty":      a_qty,
+            "amazon_price":    a_price,
+            "price_drift":     price_drift,
+            "price_drift_pct": price_drift_pct,
+        })
+
+    reactivation = [
+        m for m in matched
+        if m["amazon_status"] == "Inactive" and m["shopify_qty"] > 0
+    ]
+
+    return {
+        "shopify_only": [s_by_sku[sku] for sku in sorted(s_skus - a_skus)],
+        "amazon_only":  sorted(a_skus - s_skus),
+        "matched":      matched,
+        "reactivation": reactivation,
+    }
+
+
+def _print_sync_report(drift: dict, marketplace) -> None:
+    matched      = drift["matched"]
+    shopify_only = drift["shopify_only"]
+    amazon_only  = drift["amazon_only"]
+    reactivation = drift["reactivation"]
+
+    hr(f"Sync Shopify ↔ Amazon ({marketplace.name})")
+    print(f"  En ambos lados      : {len(matched):>4}")
+    print(f"  Solo en Shopify     : {len(shopify_only):>4}  ← oportunidades de listing")
+    print(f"  Solo en Amazon      : {len(amazon_only):>4}  ← orphan / SKU autogenerada")
+    print(f"  Reactivacion        : {len(reactivation):>4}  ← Amazon Inactive + Shopify tiene stock")
+
+    if not (matched or shopify_only or amazon_only):
+        print("\n  Sin datos cruzables. Verifica que ambas tiendas estan poblando.")
+        return
+
+    # Matched: detalle con price drift
+    if matched:
+        with_drift = [m for m in matched if m["price_drift_pct"] is not None]
+        big_drift  = [m for m in with_drift if abs(m["price_drift_pct"]) >= 5]
+        print()
+        print(f"  ── Matched ({len(matched)}, {len(big_drift)} con drift ≥5%) ──")
+        print(f"  {'SKU':<22} {'Shopify':>9} {'Amazon':>9} {'Drift':>8}  Status      Title")
+        print(f"  {'─'*22} {'─'*9} {'─'*9} {'─'*8}  {'─'*10}  {'─'*30}")
+        for m in matched[:20]:
+            sp = f"${m['shopify_price']:.2f}"
+            ap = f"${m['amazon_price']:.2f}" if m['amazon_price'] is not None else "—"
+            dp = f"{m['price_drift_pct']:+.1f}%" if m['price_drift_pct'] is not None else "—"
+            st = short(m['amazon_status'], 10)
+            ti = short(m['shopify_title'], 30)
+            print(f"  {short(m['sku'],22):<22} {sp:>9} {ap:>9} {dp:>8}  {st:<10}  {ti}")
+        if len(matched) > 20:
+            print(f"  ... y {len(matched) - 20} mas (usa --json para todos)")
+
+    # Reactivation
+    if reactivation:
+        print()
+        print(f"  ── Reactivacion candidatos ({len(reactivation)}) ──")
+        for m in reactivation[:10]:
+            print(f"  {m['sku']:<24} ${m['shopify_price']:>7.2f}  "
+                  f"Shopify stock: {m['shopify_qty']}  →  {short(m['shopify_title'], 40)}")
+
+    # Shopify-only — sample
+    if shopify_only:
+        print()
+        n = min(10, len(shopify_only))
+        print(f"  ── Solo en Shopify (primeros {n} de {len(shopify_only)}) ──")
+        for v in shopify_only[:n]:
+            sku   = v.get("sku") or "—"
+            qty   = v.get("inventoryQuantity") or 0
+            price = v.get("price") or "?"
+            name  = short(v.get("displayName") or v.get("productTitle") or "", 40)
+            print(f"  {sku:<22} stock={qty:<5}  ${price:<7}  {name}")
+
+    # Amazon-only — sample
+    if amazon_only:
+        print()
+        n = min(10, len(amazon_only))
+        print(f"  ── Solo en Amazon (primeros {n} de {len(amazon_only)}) ──")
+        for sku in amazon_only[:n]:
+            print(f"  {sku}")
+
+    print()
+
+
+def _write_listings_feed(drift: dict, feed_path: Path, marketplace_id: str,
+                         seller_id: str, product_type: str,
+                         min_drift_pct: float = 1.0) -> int:
+    """
+    Genera un JSON_LISTINGS_FEED con price patches para SKUs con drift de precio.
+
+    Solo incluye items donde |price_drift_pct| >= min_drift_pct.
+    El precio Shopify se trata como source of truth (se push a Amazon).
+
+    Retorna el numero de mensajes en el feed.
+    """
+    messages = []
+    msg_id = 0
+    for m in drift["matched"]:
+        if m.get("price_drift_pct") is None:
+            continue
+        if abs(m["price_drift_pct"]) < min_drift_pct:
+            continue
+        msg_id += 1
+        messages.append({
+            "messageId":     msg_id,
+            "sku":           m["sku"],
+            "operationType": "PATCH",
+            "productType":   product_type,
+            "patches": [{
+                "op":    "replace",
+                "path":  "/attributes/purchasable_offer",
+                "value": [{
+                    "marketplace_id": marketplace_id,
+                    "currency":       "USD",
+                    "our_price":      [{"schedule": [{"value_with_tax": m["shopify_price"]}]}],
+                }],
+            }],
+        })
+
+    feed_doc = {
+        "header": {
+            "sellerId":    seller_id,
+            "version":     "2.0",
+            "issueLocale": "en_US",
+        },
+        "messages": messages,
+    }
+
+    feed_path.parent.mkdir(parents=True, exist_ok=True)
+    feed_path.write_text(json.dumps(feed_doc, indent=2))
+    return len(messages)
+
+
+def cmd_sync(args):
+    require_sp_api()
+
+    env              = load_env()
+    creds            = get_credentials(env)
+    marketplace, mid = resolve_marketplace(env, args.marketplace)
+
+    eprint("  → Pulling Shopify variants (vía shopify-admin)...")
+    s_variants = _pull_shopify_variants(args.shopify_store)
+    eprint(f"  → {len(s_variants)} variantes Shopify ACTIVE")
+
+    eprint("  → Pulling Amazon FBA inventory...")
+    a_inv = _pull_amazon_inventory(creds, marketplace, mid)
+    eprint(f"  → {len(a_inv)} SKUs FBA en {marketplace.name}")
+
+    eprint("  → Pulling Amazon all listings (Reports async, ~30s)...")
+    a_listings = _pull_amazon_listings(creds, marketplace, mid)
+    eprint(f"  → {len(a_listings)} listings en Amazon")
+
+    drift = _compute_sync_drift(s_variants, a_inv, a_listings)
+
+    if args.json:
+        out_json(drift)
+        return
+
+    _print_sync_report(drift, marketplace)
+
+    if args.emit_feed:
+        if not args.product_type:
+            die("--emit-feed requiere --product-type (ej: BRACELET, NECKLACE, EARRING, RING).\n"
+                "    El JSON_LISTINGS_FEED necesita un productType por mensaje. Para feeds\n"
+                "    con varios tipos, genera uno por tipo.")
+
+        feed_path = Path(args.emit_feed).expanduser().resolve()
+        seller_id = env.get("AMAZON_SELLER_ID") or "__SET_AMAZON_SELLER_ID_IN_ENV__"
+
+        n = _write_listings_feed(
+            drift, feed_path, mid, seller_id, args.product_type,
+            min_drift_pct=args.min_drift_pct,
+        )
+
+        print(f"  Feed con {n} mensajes escrito en:")
+        print(f"    {feed_path}")
+        if "__SET_" in seller_id:
+            print()
+            print("  ⚠ sellerId es placeholder. Define AMAZON_SELLER_ID en ~/.env.amazon:")
+            print("    Seller Central → Settings → Account Info → Merchant Token")
+        if n == 0:
+            print()
+            print(f"  (0 mensajes — ningun SKU tenia price drift >= {args.min_drift_pct}%)")
+        else:
+            print()
+            print("  Para submittear (DESTRUCTIVO — actualiza precios en Amazon):")
+            print(f"    amazon-sp feeds submit {feed_path} \\")
+            print(f"      --type JSON_LISTINGS_FEED --confirm")
+        print()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # CONFIG — mostrar credenciales cargadas (enmascaradas)
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -1092,6 +1436,9 @@ Ejemplos:
   amazon-sp reports list                        # reports historicos (read-only)
   amazon-sp feeds list                          # feeds recientes (read-only)
   amazon-sp feeds submit FILE --type X          # bulk feed (DESTRUCTIVO, requiere --confirm)
+  amazon-sp sync                                # cruzar Shopify <-> Amazon (read-only)
+  amazon-sp sync --emit-feed price.json \\
+    --product-type BRACELET --min-drift-pct 5   # genera feed de price patches
   amazon-sp config show                         # credenciales (enmascaradas)
 
 Credenciales se leen desde .env.amazon en (primera que exista):
@@ -1191,6 +1538,22 @@ Credenciales se leen desde .env.amazon en (primera que exista):
     sp_f_s.add_argument("--confirm", action="store_true",
                         help="Confirmar submit real. Sin esto el comando hace dry-run.")
 
+    # ── sync ───────────────────────────────────────────────────────────────────
+    sp_sync = sub.add_parser(
+        "sync",
+        help="Cruzar catalogo Shopify ↔ Amazon (detectar drift, listings huerfanos, reactivacion)",
+    )
+    _add_marketplace_flag(sp_sync)
+    sp_sync.add_argument("--shopify-store", metavar="ALIAS",
+                         help="Store alias en shopify-admin (default: el default configurado)")
+    sp_sync.add_argument("--emit-feed", metavar="PATH",
+                         help="Escribe un JSON_LISTINGS_FEED con price patches para SKUs con drift. "
+                              "NO submitea — usa amazon-sp feeds submit --confirm para eso.")
+    sp_sync.add_argument("--product-type", metavar="TYPE",
+                         help="Required con --emit-feed. ProductType Amazon (BRACELET, NECKLACE, etc.)")
+    sp_sync.add_argument("--min-drift-pct", type=float, default=1.0, metavar="N",
+                         help="Solo emite feed para SKUs con drift de precio >= N%% (default 1)")
+
     # ── config ─────────────────────────────────────────────────────────────────
     sp_cfg     = sub.add_parser("config", help="Configuracion local")
     sp_cfg_sub = sp_cfg.add_subparsers(dest="subcommand", required=True, metavar="SUBCOMMAND")
@@ -1212,6 +1575,7 @@ Credenciales se leen desde .env.amazon en (primera que exista):
         ("reports",   "list"):   cmd_reports_list,
         ("feeds",     "list"):   cmd_feeds_list,
         ("feeds",     "submit"): cmd_feeds_submit,
+        ("sync",      None):     cmd_sync,
         ("config",    "show"):   cmd_config_show,
     }
 
