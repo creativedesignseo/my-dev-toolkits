@@ -31,8 +31,10 @@ from __future__ import annotations
 import argparse
 import csv
 import gzip
+import hashlib
 import io
 import json
+import mimetypes
 import shutil
 import subprocess
 import sys
@@ -1039,6 +1041,463 @@ def cmd_feeds_submit(args):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# A+ CONTENT (Sprint 4) — modulos visuales para listings con Brand Registry
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# Flujo tipico:
+#   1. amazon-sp aplus upload-image foto.jpg   → uploadDestinationId
+#   2. amazon-sp aplus template > my.json
+#   3. (editar my.json con tus textos + uploadDestinationIds)
+#   4. amazon-sp aplus create my.json           → contentReferenceKey (DRAFT)
+#   5. amazon-sp aplus apply <KEY> --asin <ASIN>
+#   6. amazon-sp aplus submit <KEY> --confirm   → Amazon revisa (24-72h)
+
+
+APLUS_INCLUDED_DATA_FULL = ["METADATA", "CONTENTS"]
+
+
+def _aplus_client(creds, marketplace):
+    from sp_api.api import AplusContent
+    return AplusContent(credentials=creds, marketplace=marketplace)
+
+
+def cmd_aplus_list(args):
+    require_sp_api()
+    env             = load_env()
+    creds           = get_credentials(env)
+    marketplace, mid = resolve_marketplace(env, args.marketplace)
+
+    from sp_api.base.exceptions import SellingApiException
+
+    client = _aplus_client(creds, marketplace)
+    try:
+        result = client.search_content_documents(marketplaceId=mid)
+    except SellingApiException as e:
+        die(f"search_content_documents fallo:\n    {e}")
+
+    payload = result.payload or {}
+    docs    = payload.get("contentDocumentInfoList") or []
+
+    if args.json:
+        out_json(docs)
+        return
+
+    hr(f"A+ Content documents — {marketplace.name} — {len(docs)} encontrados")
+    if not docs:
+        print("  (cuenta sin A+ Content todavía. Crea uno con `amazon-sp aplus create`.)")
+        return
+
+    print(f"  {'contentReferenceKey':<32} {'Status':<14} {'Type':<10} Nombre")
+    print(f"  {'─'*32} {'─'*14} {'─'*10} {'─'*40}")
+    for d in docs:
+        key  = short(d.get("contentReferenceKey", "?"), 32)
+        st   = short(d.get("status", "?"), 14)
+        ct   = short(d.get("contentType", "?"), 10)
+        name = short(d.get("name", "?"), 40)
+        print(f"  {key:<32} {st:<14} {ct:<10} {name}")
+    print()
+
+
+def cmd_aplus_get(args):
+    require_sp_api()
+    env             = load_env()
+    creds           = get_credentials(env)
+    marketplace, mid = resolve_marketplace(env, args.marketplace)
+
+    from sp_api.base.exceptions import SellingApiException
+
+    client = _aplus_client(creds, marketplace)
+    try:
+        result = client.get_content_document(
+            args.doc_id,
+            marketplaceId=mid,
+            includedDataSet=APLUS_INCLUDED_DATA_FULL,
+        )
+    except SellingApiException as e:
+        die(f"get_content_document fallo:\n    {e}")
+
+    payload = result.payload or {}
+
+    if args.json:
+        out_json(payload)
+        return
+
+    metadata = payload.get("contentMetadata") or {}
+    document = payload.get("contentDocument") or {}
+    modules  = document.get("contentModuleList") or []
+
+    hr(f"A+ Content {args.doc_id}")
+    print(f"  Nombre        : {document.get('name','?')}")
+    print(f"  Tipo          : {document.get('contentType','?')}")
+    print(f"  SubTipo       : {document.get('contentSubType','—')}")
+    print(f"  Locale        : {document.get('locale','?')}")
+    print(f"  Status        : {metadata.get('status','?')}")
+    print(f"  Last updated  : {(metadata.get('updateTime','') or '')[:19]}")
+    print(f"  Modules       : {len(modules)}")
+    for i, m in enumerate(modules, 1):
+        mt = m.get("contentModuleType", "?")
+        print(f"    {i}. {mt}")
+    print()
+
+
+def cmd_aplus_asins(args):
+    require_sp_api()
+    env             = load_env()
+    creds           = get_credentials(env)
+    marketplace, mid = resolve_marketplace(env, args.marketplace)
+
+    from sp_api.base.exceptions import SellingApiException
+
+    client = _aplus_client(creds, marketplace)
+    try:
+        result = client.list_content_document_asin_relations(
+            args.doc_id,
+            marketplaceId=mid,
+            includedDataSet=["METADATA"],
+        )
+    except SellingApiException as e:
+        die(f"list_content_document_asin_relations fallo:\n    {e}")
+
+    payload  = result.payload or {}
+    asin_set = payload.get("asinMetadataSet") or []
+
+    if args.json:
+        out_json(asin_set)
+        return
+
+    hr(f"ASINs ligados al document {args.doc_id} — {len(asin_set)}")
+    if not asin_set:
+        print("  (sin ASINs ligados — usa `amazon-sp aplus apply` para linkear)")
+        return
+    domain = amazon_marketplace_domain(marketplace.name)
+    for a in asin_set:
+        asin = a.get("asin", "?")
+        bp   = a.get("badgeSet") or []
+        st   = a.get("contentReferenceKey", "—")
+        print(f"  {asin}   badges={','.join(bp) if bp else '—'}")
+        print(f"    https://{domain}/dp/{asin}")
+    print()
+
+
+def _put_image_to_url(url: str, file_path: Path, content_type: str, content_md5: str) -> None:
+    """PUT al presigned URL devuelto por createUploadDestination."""
+    with open(file_path, "rb") as f:
+        data = f.read()
+    req = urllib.request.Request(
+        url,
+        data=data,
+        method="PUT",
+        headers={
+            "Content-Type": content_type,
+            "Content-MD5":  content_md5,
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            if not (200 <= resp.status < 300):
+                die(f"PUT a S3 fallo con status {resp.status}")
+    except urllib.error.HTTPError as e:
+        body = e.read().decode(errors="replace")[:400]
+        die(f"PUT a S3 fallo: HTTP {e.code}\n{body}")
+
+
+def cmd_aplus_upload_image(args):
+    require_sp_api()
+
+    file_path = Path(args.file).expanduser().resolve()
+    if not file_path.exists():
+        die(f"Archivo no encontrado: {file_path}")
+    if file_path.stat().st_size == 0:
+        die(f"Archivo vacio: {file_path}")
+
+    # Adivinar content-type por extension
+    ct, _ = mimetypes.guess_type(str(file_path))
+    if not ct:
+        ct = args.content_type or "image/jpeg"
+    if args.content_type:
+        ct = args.content_type
+
+    # MD5 base64-encoded como exige Amazon
+    import base64
+    with open(file_path, "rb") as f:
+        data = f.read()
+    md5_b64 = base64.b64encode(hashlib.md5(data).digest()).decode()
+
+    env             = load_env()
+    creds           = get_credentials(env)
+    marketplace, mid = resolve_marketplace(env, args.marketplace)
+
+    from sp_api.api import Upload
+    from sp_api.base.exceptions import SellingApiException
+
+    upload_client = Upload(credentials=creds, marketplace=marketplace)
+
+    # Paso 1: pedir destination + presigned URL.
+    # El metodo upload_document de saleweaver hace solo este paso.
+    eprint(f"  → Solicitando upload destination ({file_path.name}, {file_path.stat().st_size:,} bytes, {ct})")
+    try:
+        with open(file_path, "rb") as f:
+            resp = upload_client.upload_document(
+                resource="aplus",
+                file=f,
+                content_type=ct,
+                contentMD5=md5_b64,
+            )
+    except SellingApiException as e:
+        die(f"createUploadDestination fallo:\n    {e}")
+
+    p = (resp.payload or {})
+    upload_url = p.get("url")
+    dest_id    = p.get("uploadDestinationId")
+    if not upload_url or not dest_id:
+        die(f"Respuesta sin url/uploadDestinationId:\n{p}")
+
+    # Paso 2: PUT del archivo al presigned URL
+    eprint("  → Subiendo archivo al destino S3...")
+    _put_image_to_url(upload_url, file_path, ct, md5_b64)
+
+    if args.json:
+        out_json({"uploadDestinationId": dest_id, "url": upload_url})
+        return
+
+    hr("✓ Imagen subida")
+    print(f"  uploadDestinationId : {dest_id}")
+    print(f"  (usa este ID en el template A+ Content como 'uploadDestinationId')")
+    print()
+
+
+APLUS_TEMPLATE = {
+    "contentDocument": {
+        "name": "REEMPLAZA_NOMBRE_INTERNO",
+        "contentType": "EBC",
+        "locale": "en_US",
+        "contentModuleList": [
+            {
+                "contentModuleType": "STANDARD_HEADER_IMAGE_TEXT",
+                "standardHeaderImageText": {
+                    "headline": {"value": "TÍTULO PRINCIPAL (max 150 chars)", "decoratorSet": []},
+                    "block": {
+                        "headline": {"value": "Subtitulo (50 chars)", "decoratorSet": []},
+                        "body": {
+                            "textList": [
+                                {
+                                    "text": {
+                                        "value": "Parrafo de cuerpo. Describe el producto.",
+                                        "decoratorSet": []
+                                    }
+                                }
+                            ]
+                        },
+                        "image": {
+                            "uploadDestinationId": "REEMPLAZA_CON_UPLOAD_DESTINATION_ID",
+                            "imageCropSpecification": {
+                                "size": {
+                                    "width":  {"value": 970, "units": "pixels"},
+                                    "height": {"value": 300, "units": "pixels"}
+                                },
+                                "offset": {
+                                    "x": {"value": 0, "units": "pixels"},
+                                    "y": {"value": 0, "units": "pixels"}
+                                }
+                            },
+                            "altText": "Descripcion alt-text de la imagen header"
+                        }
+                    }
+                }
+            },
+            {
+                "contentModuleType": "STANDARD_PRODUCT_DESCRIPTION",
+                "standardProductDescription": {
+                    "body": {
+                        "textList": [
+                            {
+                                "text": {
+                                    "value": "Descripcion completa del producto. Reemplaza el campo description del listing tradicional.",
+                                    "decoratorSet": []
+                                }
+                            }
+                        ]
+                    }
+                }
+            },
+            {
+                "contentModuleType": "STANDARD_TEXT",
+                "standardText": {
+                    "headline": {"value": "ALGO MÁS QUE QUIERAS DESTACAR", "decoratorSet": []},
+                    "body": {
+                        "textList": [
+                            {
+                                "text": {
+                                    "value": "Otro bloque de texto adicional.",
+                                    "decoratorSet": []
+                                }
+                            }
+                        ]
+                    }
+                }
+            }
+        ]
+    }
+}
+
+
+def cmd_aplus_template(args):
+    """Imprime un template JSON valido para usar como base con `aplus create`."""
+    print(json.dumps(APLUS_TEMPLATE, indent=2, ensure_ascii=False))
+
+
+def cmd_aplus_create(args):
+    require_sp_api()
+
+    file_path = Path(args.file).expanduser().resolve()
+    if not file_path.exists():
+        die(f"Archivo no encontrado: {file_path}")
+
+    try:
+        body = json.loads(file_path.read_text())
+    except json.JSONDecodeError as e:
+        die(f"JSON invalido en {file_path}: {e}")
+
+    if "contentDocument" not in body:
+        die("El JSON debe tener una clave 'contentDocument' al nivel raiz. "
+            "Genera el formato base con: amazon-sp aplus template > base.json")
+
+    # Detectar placeholders sin reemplazar (warning, no error duro)
+    raw = file_path.read_text()
+    placeholders = []
+    if "REEMPLAZA_NOMBRE_INTERNO" in raw:
+        placeholders.append("nombre")
+    if "REEMPLAZA_CON_UPLOAD_DESTINATION_ID" in raw:
+        placeholders.append("uploadDestinationId")
+    if placeholders:
+        eprint(f"  ⚠ El template aun tiene placeholders sin reemplazar: {', '.join(placeholders)}")
+        eprint("    Amazon probablemente rechazara el draft o el approval. Continua bajo tu responsabilidad.")
+
+    env             = load_env()
+    creds           = get_credentials(env)
+    marketplace, mid = resolve_marketplace(env, args.marketplace)
+
+    from sp_api.base.exceptions import SellingApiException
+
+    client = _aplus_client(creds, marketplace)
+    try:
+        result = client.create_content_document(marketplaceId=mid, body=body)
+    except SellingApiException as e:
+        die(f"create_content_document fallo:\n    {e}")
+
+    payload = result.payload or {}
+    key     = payload.get("contentReferenceKey")
+    warns   = payload.get("warnings") or []
+
+    if args.json:
+        out_json(payload)
+        return
+
+    hr("✓ A+ Content document creado")
+    print(f"  contentReferenceKey : {key}")
+    print(f"  Status              : DRAFT")
+    if warns:
+        print()
+        print("  Warnings de Amazon:")
+        for w in warns:
+            print(f"    [{w.get('code','?')}] {w.get('details','?')}")
+    print()
+    print("  Siguientes pasos:")
+    print(f"    1. amazon-sp aplus apply {key} --asin <ASIN>")
+    print(f"    2. amazon-sp aplus submit {key} --confirm")
+    print()
+
+
+def cmd_aplus_apply(args):
+    require_sp_api()
+    env             = load_env()
+    creds           = get_credentials(env)
+    marketplace, mid = resolve_marketplace(env, args.marketplace)
+
+    asins = [a.strip().upper() for a in args.asin if a.strip()]
+    if not asins:
+        die("Debes pasar al menos un --asin")
+
+    from sp_api.base.exceptions import SellingApiException
+
+    client = _aplus_client(creds, marketplace)
+
+    body = {
+        "asinSet": asins,
+    }
+
+    try:
+        result = client.post_content_document_asin_relations(
+            args.doc_id,
+            marketplaceId=mid,
+            body=body,
+        )
+    except SellingApiException as e:
+        die(f"post_content_document_asin_relations fallo:\n    {e}")
+
+    payload = result.payload or {}
+
+    if args.json:
+        out_json(payload)
+        return
+
+    hr(f"✓ ASINs ligados al document {args.doc_id}")
+    for asin in asins:
+        print(f"  {asin}")
+    warns = payload.get("warnings") or []
+    if warns:
+        print()
+        print("  Warnings:")
+        for w in warns:
+            print(f"    [{w.get('code','?')}] {w.get('details','?')}")
+    print()
+    print("  Siguiente paso: submit a Amazon para approval")
+    print(f"    amazon-sp aplus submit {args.doc_id} --confirm")
+    print()
+
+
+def cmd_aplus_submit(args):
+    if not args.confirm:
+        hr("aplus submit — DRY RUN  (sin --confirm)")
+        print(f"  Document     : {args.doc_id}")
+        print(f"  Marketplace  : {args.marketplace or '(default del .env)'}")
+        print()
+        print("  Para realmente submittear (Amazon empezara el review, 24-72h):")
+        mp = f" --marketplace {args.marketplace}" if args.marketplace else ""
+        print(f"    amazon-sp aplus submit {args.doc_id}{mp} --confirm")
+        print()
+        print("  ATENCION: tras submit, el documento entra en review y los ASINs")
+        print("  ligados muestran el A+ Content publico cuando Amazon lo apruebe.")
+        return
+
+    require_sp_api()
+    env             = load_env()
+    creds           = get_credentials(env)
+    marketplace, mid = resolve_marketplace(env, args.marketplace)
+
+    from sp_api.base.exceptions import SellingApiException
+
+    client = _aplus_client(creds, marketplace)
+    try:
+        result = client.post_content_document_approval_submission(
+            args.doc_id,
+            marketplaceId=mid,
+        )
+    except SellingApiException as e:
+        die(f"post_content_document_approval_submission fallo:\n    {e}")
+
+    if args.json:
+        out_json(result.payload or {})
+        return
+
+    hr(f"✓ Submit a approval enviado — {args.doc_id}")
+    print(f"  Amazon revisará el documento en 24-72h.")
+    print(f"  Trackea con:")
+    print(f"    amazon-sp aplus get {args.doc_id}")
+    print()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # SYNC — comparacion Shopify <-> Amazon (Sprint 3, read-only por defecto)
 # ═══════════════════════════════════════════════════════════════════════════════
 #
@@ -1439,6 +1898,15 @@ Ejemplos:
   amazon-sp sync                                # cruzar Shopify <-> Amazon (read-only)
   amazon-sp sync --emit-feed price.json \\
     --product-type BRACELET --min-drift-pct 5   # genera feed de price patches
+
+  # A+ Content (Brand Registry, modulos visuales en la pagina de producto)
+  amazon-sp aplus list                          # documentos A+ en tu cuenta
+  amazon-sp aplus upload-image foto.jpg         # sube imagen, devuelve uploadDestinationId
+  amazon-sp aplus template > my.json            # template base, editar
+  amazon-sp aplus create my.json                # crea draft
+  amazon-sp aplus apply <KEY> --asin <ASIN>     # linkea doc <-> ASIN
+  amazon-sp aplus submit <KEY> --confirm        # envia a review Amazon (24-72h)
+
   amazon-sp config show                         # credenciales (enmascaradas)
 
 Credenciales se leen desde .env.amazon en (primera que exista):
@@ -1538,6 +2006,48 @@ Credenciales se leen desde .env.amazon en (primera que exista):
     sp_f_s.add_argument("--confirm", action="store_true",
                         help="Confirmar submit real. Sin esto el comando hace dry-run.")
 
+    # ── aplus ──────────────────────────────────────────────────────────────────
+    sp_ap     = sub.add_parser("aplus", help="A+ Content (modulos visuales, requiere Brand Registry)")
+    sp_ap_sub = sp_ap.add_subparsers(dest="subcommand", required=True, metavar="SUBCOMMAND")
+
+    sp_ap_l = sp_ap_sub.add_parser("list", help="Listar A+ documents de la cuenta")
+    _add_marketplace_flag(sp_ap_l)
+
+    sp_ap_g = sp_ap_sub.add_parser("get", help="Detalle completo de un document")
+    _add_marketplace_flag(sp_ap_g)
+    sp_ap_g.add_argument("doc_id", metavar="DOC_ID", help="contentReferenceKey")
+
+    sp_ap_as = sp_ap_sub.add_parser("asins", help="ASINs ligados a un document")
+    _add_marketplace_flag(sp_ap_as)
+    sp_ap_as.add_argument("doc_id", metavar="DOC_ID", help="contentReferenceKey")
+
+    sp_ap_up = sp_ap_sub.add_parser("upload-image", help="Sube una imagen, devuelve uploadDestinationId")
+    _add_marketplace_flag(sp_ap_up)
+    sp_ap_up.add_argument("file", metavar="FILE", help="Ruta a la imagen (JPG/PNG recomendado)")
+    sp_ap_up.add_argument("--content-type", metavar="MIME",
+                          help="Override mime (default: inferido de la extension)")
+
+    sp_ap_t = sp_ap_sub.add_parser("template", help="Imprime template JSON valido para `create`")
+
+    sp_ap_c = sp_ap_sub.add_parser("create", help="Crea un draft A+ desde JSON")
+    _add_marketplace_flag(sp_ap_c)
+    sp_ap_c.add_argument("file", metavar="FILE", help="Path al JSON con la estructura del documento")
+
+    sp_ap_ap = sp_ap_sub.add_parser("apply", help="Linkea un document a uno o mas ASINs")
+    _add_marketplace_flag(sp_ap_ap)
+    sp_ap_ap.add_argument("doc_id", metavar="DOC_ID", help="contentReferenceKey")
+    sp_ap_ap.add_argument("--asin", action="append", required=True, metavar="ASIN",
+                          help="ASIN a linkear (repetible: --asin A --asin B)")
+
+    sp_ap_s = sp_ap_sub.add_parser(
+        "submit",
+        help="Submittea un document a Amazon para approval (DESTRUCTIVO — requiere --confirm)",
+    )
+    _add_marketplace_flag(sp_ap_s)
+    sp_ap_s.add_argument("doc_id", metavar="DOC_ID", help="contentReferenceKey")
+    sp_ap_s.add_argument("--confirm", action="store_true",
+                         help="Confirma el submit real. Sin esto el comando hace dry-run.")
+
     # ── sync ───────────────────────────────────────────────────────────────────
     sp_sync = sub.add_parser(
         "sync",
@@ -1564,19 +2074,27 @@ Credenciales se leen desde .env.amazon en (primera que exista):
     sub_ = getattr(args, "subcommand", None)
 
     dispatch = {
-        ("shop",      None):     cmd_shop,
-        ("inventory", None):     cmd_inventory,
-        ("listings",  None):     cmd_listings,
-        ("orders",    None):     cmd_orders,
-        ("pricing",   None):     cmd_pricing,
-        ("catalog",   "search"): cmd_catalog_search,
-        ("catalog",   "get"):    cmd_catalog_get,
-        ("fees",      None):     cmd_fees,
-        ("reports",   "list"):   cmd_reports_list,
-        ("feeds",     "list"):   cmd_feeds_list,
-        ("feeds",     "submit"): cmd_feeds_submit,
-        ("sync",      None):     cmd_sync,
-        ("config",    "show"):   cmd_config_show,
+        ("shop",      None):           cmd_shop,
+        ("inventory", None):           cmd_inventory,
+        ("listings",  None):           cmd_listings,
+        ("orders",    None):           cmd_orders,
+        ("pricing",   None):           cmd_pricing,
+        ("catalog",   "search"):       cmd_catalog_search,
+        ("catalog",   "get"):          cmd_catalog_get,
+        ("fees",      None):           cmd_fees,
+        ("reports",   "list"):         cmd_reports_list,
+        ("feeds",     "list"):         cmd_feeds_list,
+        ("feeds",     "submit"):       cmd_feeds_submit,
+        ("aplus",     "list"):         cmd_aplus_list,
+        ("aplus",     "get"):          cmd_aplus_get,
+        ("aplus",     "asins"):        cmd_aplus_asins,
+        ("aplus",     "upload-image"): cmd_aplus_upload_image,
+        ("aplus",     "template"):     cmd_aplus_template,
+        ("aplus",     "create"):       cmd_aplus_create,
+        ("aplus",     "apply"):        cmd_aplus_apply,
+        ("aplus",     "submit"):       cmd_aplus_submit,
+        ("sync",      None):           cmd_sync,
+        ("config",    "show"):         cmd_config_show,
     }
 
     fn = dispatch.get((cmd, sub_))

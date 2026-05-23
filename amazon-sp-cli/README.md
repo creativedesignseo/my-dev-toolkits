@@ -72,6 +72,14 @@ Marketplace IDs comunes:
 | `amazon-sp feeds submit FILE --type X --confirm` | **DESTRUCTIVO**. Bulk feed. Sin `--confirm` = dry-run. | `Feeds.submit_feed` |
 | `amazon-sp sync` | Cruce Shopify ↔ Amazon: drift, oportunidades, reactivación | shopify-admin + `Inventories` + `Reports` |
 | `amazon-sp sync --emit-feed PATH --product-type X` | Genera JSON_LISTINGS_FEED con price patches (no submite) | (escribe a disco) |
+| `amazon-sp aplus list` | Lista A+ Content documents en la cuenta | `AplusContent.search_content_documents` |
+| `amazon-sp aplus get <KEY>` | Detalle completo de un document (módulos, status) | `AplusContent.get_content_document` |
+| `amazon-sp aplus asins <KEY>` | ASINs ligados a un document | `AplusContent.list_content_document_asin_relations` |
+| `amazon-sp aplus upload-image FILE` | Sube imagen → `uploadDestinationId` (paso 2 incluido) | `Upload.upload_document` + S3 PUT |
+| `amazon-sp aplus template` | Imprime template JSON base | (local) |
+| `amazon-sp aplus create FILE` | Crea draft A+ desde JSON | `AplusContent.create_content_document` |
+| `amazon-sp aplus apply <KEY> --asin ASIN [...]` | Linkea document(s) a ASIN(s) | `AplusContent.post_content_document_asin_relations` |
+| `amazon-sp aplus submit <KEY> --confirm` | **DESTRUCTIVO**. Envía a review Amazon (24-72h). Sin `--confirm` = dry-run. | `AplusContent.post_content_document_approval_submission` |
 | `amazon-sp config show` | Credenciales cargadas (enmascaradas) | — |
 
 Flags globales:
@@ -254,6 +262,51 @@ Flags globales:
 > todo para detectar la oportunidad ("333 productos de Shopify nunca listados en Amazon")
 > y los orphan de Amazon. Para matching real entre catálogos con SKU diferente, próxima
 > iteración: matching por barcode (UPC/EAN) o mapping file manual.
+
+### A+ Content workflow completo
+
+Requiere Brand Registry activo (Dream Beauty Jewelry lo tiene). Flujo end-to-end:
+
+```bash
+# 1. Subir las imágenes que vas a usar
+amazon-sp aplus upload-image header.jpg
+  # → uploadDestinationId : amzn1.aplus.image.xxxxx
+amazon-sp aplus upload-image lifestyle.jpg
+  # → uploadDestinationId : amzn1.aplus.image.yyyyy
+
+# 2. Generar el template y editarlo con tus textos + IDs de imagen
+amazon-sp aplus template > bracelet-aplus.json
+# (editar bracelet-aplus.json con tu editor:
+#  - nombre interno
+#  - textos: headline, body, etc.
+#  - uploadDestinationId en cada módulo de imagen
+# )
+
+# 3. Crear el draft en Amazon
+amazon-sp aplus create bracelet-aplus.json
+  # → contentReferenceKey : 12345678-aaaa-bbbb-cccc-1234567890ab
+
+# 4. Linkear al ASIN (puedes pasar varios --asin para aplicar a múltiples)
+amazon-sp aplus apply 12345678-aaaa-bbbb-cccc-1234567890ab --asin B0GTNLGYB8
+
+# 5. Submit a review (dry-run primero — sin --confirm)
+amazon-sp aplus submit 12345678-aaaa-bbbb-cccc-1234567890ab
+# → muestra qué se va a hacer, no submitea
+
+# 6. Submit real (gated)
+amazon-sp aplus submit 12345678-aaaa-bbbb-cccc-1234567890ab --confirm
+# → Amazon revisa en 24-72h. Trackea con `amazon-sp aplus get <KEY>`.
+```
+
+**Módulos de A+ disponibles** (en el template incluyo 3 comunes):
+- `STANDARD_HEADER_IMAGE_TEXT` — header con imagen + headline + body
+- `STANDARD_PRODUCT_DESCRIPTION` — reemplaza descripción del listing (texto only)
+- `STANDARD_TEXT` — bloque de texto adicional
+
+Otros módulos válidos (consulta [docs Amazon](https://developer-docs.amazon.com/sp-api/docs/aplus-content-api-v2020-11-01-reference)):
+`STANDARD_COMPARISON_TABLE` (multi-ASIN), `STANDARD_FOUR_IMAGE_TEXT`,
+`STANDARD_IMAGE_TEXT_OVERLAY`, `STANDARD_SINGLE_IMAGE_HIGHLIGHTS`,
+`STANDARD_SINGLE_IMAGE_SPECS_DETAIL`, `STANDARD_SINGLE_SIDE_IMAGE`, etc.
 
 ## Próximos comandos planificados
 
