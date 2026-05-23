@@ -56,61 +56,121 @@ Marketplace IDs comunes:
 
 ## Comandos
 
-```bash
-amazon-sp shop                   # info de la cuenta seller — verifica conexion
-amazon-sp config show            # ver credenciales cargadas (enmascaradas)
-amazon-sp shop --json            # output JSON crudo para piping
-```
+| Comando | Para qué | API SP-API |
+|---|---|---|
+| `amazon-sp shop` | Info cuenta seller + marketplaces activos (verifica conexión) | `Sellers.get_marketplace_participation` |
+| `amazon-sp inventory` | Stock FBA actual del marketplace base | `Inventories.get_inventory_summary_marketplace` |
+| `amazon-sp listings` | TODOS los listings (Active+Inactive+Incomplete), via Reports async | `Reports` + `GET_MERCHANT_LISTINGS_ALL_DATA` |
+| `amazon-sp orders --since N` | Pedidos últimos N días (sin PII por defecto) | `Orders.get_orders` |
+| `amazon-sp pricing ASIN` | Tu precio + competencia + Buy Box winner | `Products.get_item_offers` |
+| `amazon-sp catalog search "query"` | Top 10 catálogo Amazon global por keyword | `CatalogItems v2022-04-01.search_catalog_items` |
+| `amazon-sp config show` | Credenciales cargadas (enmascaradas) | — |
 
-`amazon-sp shop` llama a `Sellers.get_marketplace_participation()`, que es el
-endpoint canónico para confirmar que las credenciales son válidas y ver en qué
-marketplaces participa el seller.
+Flags globales:
+- `--json` (`-j`) → output JSON crudo para piping (`jq`, scripts, etc.)
+- `--marketplace US|CA|MX` (`-m`) → override del marketplace base. Por defecto usa `AMAZON_MARKETPLACE_ID` del `.env`.
 
-### Ejemplo de output real
+### Ejemplos de output real
 
-Primer call exitoso en producción — Dream Beauty Jewelry LLC, 23 mayo 2026:
+> Producción — Dream Beauty Jewelry LLC, validado 23 mayo 2026.
+
+**`amazon-sp shop`** — los 3 marketplaces consumer-facing + 3 stores internos MCF:
 
 ```
   Cuenta seller — 6 marketplace(s) activos
-  ────────────────────────────────────────────────────────────
   Credenciales      : /Users/aimac/.env.amazon
   Marketplace base  : US  (ATVPDKIKX0DER)
 
   Amazon.com (US)  —  ✓ vendiendo
-    Marketplace ID : ATVPDKIKX0DER
-    Moneda         : USD     Idioma: en_US
-    Dominio        : www.amazon.com
-
+    Marketplace ID : ATVPDKIKX0DER     Moneda: USD     Dominio: www.amazon.com
   Amazon.ca (CA)  —  ✓ vendiendo
-    Marketplace ID : A2EUQ1WTGCTBG2
-    ...
-
   Amazon.com.mx (MX)  —  ✓ vendiendo
-    Marketplace ID : A1AM78C64UM0Y8
-    ...
+  ...
 
   ✓ Conexion OK
 ```
 
-> **Nota sobre los 6 marketplaces:** la API devuelve 3 marketplaces públicos
-> (US, CA, MX) **más 3 stores internos** de Amazon (sim1/siprod/sidevo) que
-> corresponden al **Multi-Channel Fulfillment** y aparecen por defecto en
-> cualquier cuenta seller. Se pueden ignorar para research y operativa de
-> listings — solo importan los marketplaces consumer-facing.
+> Los 3 stores internos (`sim1/siprod/sidevo`) son endpoints internos de
+> Multi-Channel Fulfillment y aparecen por defecto en cualquier seller account.
+> Se ignoran para research y operativa de listings.
 
-## Estado actual
+**`amazon-sp inventory`** — 20 SKUs, 1 con stock real:
 
-Este CLI está en **fase 1 (bootstrap)**. Solo el comando `shop` está
-implementado para validar end-to-end que el self-authorize + refresh token
-funcionan. Próximos comandos planificados (ver
-`Clients/pirojewelry.com/09_AMAZON/07_implementation-plan.md`):
+```
+  Inventario FBA — US — 20 SKU(s) totales
+  Vendible total : 5 unidades
+  SKUs con stock : 1
 
-- `amazon-sp catalog search <keywords>`
-- `amazon-sp catalog get <ASIN>`
-- `amazon-sp listings list / get`
-- `amazon-sp inventory levels`
-- `amazon-sp orders --since 7daysAgo`
-- `amazon-sp reports request / list / get`
+  SKU                    ASIN         Cond    Sellable  Nombre
+  DBJ-HRT-GLD-WHT-001    B0GTNLGYB8   NewIt…         5  14K Gold Filled Heart Chain Bracelet…
+  12-8P7H-1HZ9           B0GYGKGMVY   NewIt…         0  Women's Two-Tone X Accent Bangle Bra…
+  ...
+```
+
+**`amazon-sp listings`** — Reports async, ~30s de polling:
+
+```
+  → Solicitando report GET_MERCHANT_LISTINGS_ALL_DATA...
+  → reportId: 110885020596
+  → status: IN_PROGRESS
+  → status: DONE
+  → Descargando documento...
+
+  Listings — US — 17 total
+  Inactive       : 12
+  Incomplete     : 4
+  Active         : 1
+  Por canal:
+    AMAZON_NA      : 16
+    DEFAULT        : 1
+```
+
+**`amazon-sp orders --since 30daysAgo`**:
+
+```
+  Pedidos — ultimos 30 dias — US — 2 encontrados
+  OrderID                Fecha      Status                  Total  Items  Canal
+  111-8467663-9401013    2026-04-23 Shipped             32.09 USD      1  AFN
+  114-2255413-9677036    2026-05-05 Shipped             31.94 USD      1  AFN
+```
+
+`AFN` = Amazon Fulfillment Network (FBA). `MFN` sería seller-fulfilled.
+
+**`amazon-sp pricing B0GTNLGYB8`**:
+
+```
+  Pricing — ASIN B0GTNLGYB8 — US
+  Producto         : https://www.amazon.com/dp/B0GTNLGYB8
+  Ofertas totales  : 1
+  Buy Box price    : 29.99 USD  (condition=New)
+  Lowest price     : 29.99 USD + 0.0 ship
+
+  Top 1 ofertas:
+  #      Price   +Ship  Cond   FBA  BBox   Feedback
+  1  29.99 USD     0.0  new    yes  ✓             1
+```
+
+**`amazon-sp catalog search "silver heart bracelet"`**:
+
+```
+  Catalogo Amazon — 'silver heart bracelet' — US — 10 resultados
+   1. [B0C9M1TND3]  brand: PANDORA
+      PANDORA Heart Clasp Snake Chain Bracelet…
+      https://www.amazon.com/dp/B0C9M1TND3
+   2. [B01N360YYH]  brand: Amberta
+      Amberta Women's 925 Sterling Silver Heart Bracelet…
+   ...
+```
+
+## Próximos comandos planificados
+
+Ver `Clients/pirojewelry.com/09_AMAZON/07_implementation-plan.md`:
+
+- `amazon-sp catalog get <ASIN>` — detalle completo de un ítem
+- `amazon-sp fees <ASIN>` — estimación referral + FBA fees
+- `amazon-sp reports list / get <id>` — historial de reports manuales
+- `amazon-sp feeds submit <file>` — carga masiva (>20 items)
+- `amazon-sp pricing autorepricer` — repricing con reglas (en evaluación)
 
 ## Troubleshooting
 
