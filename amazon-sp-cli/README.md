@@ -62,8 +62,14 @@ Marketplace IDs comunes:
 | `amazon-sp inventory` | Stock FBA actual del marketplace base | `Inventories.get_inventory_summary_marketplace` |
 | `amazon-sp listings` | TODOS los listings (Active+Inactive+Incomplete), via Reports async | `Reports` + `GET_MERCHANT_LISTINGS_ALL_DATA` |
 | `amazon-sp orders --since N` | Pedidos últimos N días (sin PII por defecto) | `Orders.get_orders` |
+| `amazon-sp orders --details` | Idem + buyer info via RDT (PII, opt-in) | `Tokens.create_restricted_data_token` |
 | `amazon-sp pricing ASIN` | Tu precio + competencia + Buy Box winner | `Products.get_item_offers` |
 | `amazon-sp catalog search "query"` | Top 10 catálogo Amazon global por keyword | `CatalogItems v2022-04-01.search_catalog_items` |
+| `amazon-sp catalog get ASIN` | Detalle completo de un ASIN (brand, BSR, image, attrs) | `CatalogItems v2022-04-01.get_catalog_item` |
+| `amazon-sp fees ASIN --price N` | Estimación referral + FBA fees (con breakdown FinalFee vs advertised) | `ProductFees.get_product_fees_estimate_for_asin` |
+| `amazon-sp reports list` | Reports recientes (filtrado por tipos comunes) | `Reports.get_reports` |
+| `amazon-sp feeds list` | Feeds recientes (default `JSON_LISTINGS_FEED`) | `Feeds.get_feeds` |
+| `amazon-sp feeds submit FILE --type X --confirm` | **DESTRUCTIVO**. Bulk feed. Sin `--confirm` = dry-run. | `Feeds.submit_feed` |
 | `amazon-sp config show` | Credenciales cargadas (enmascaradas) | — |
 
 Flags globales:
@@ -162,15 +168,73 @@ Flags globales:
    ...
 ```
 
+**`amazon-sp catalog get B0GTNLGYB8`** — detalle completo del ítem:
+
+```
+  Catalog item — B0GTNLGYB8 — US
+  Brand          : Dream Beauty Jewelry
+  Title          : 14K Gold Filled Heart Chain Bracelet for Women…
+  Manufacturer   : Dream Beauty Jewelry
+  Color          : Gold
+  Product type   : BRACELET
+
+  Sales Ranks:
+    #4562     in Women's Link Charm Bracelets
+    #3394174  in Clothing, Shoes & Jewelry
+
+  Imagen principal : https://m.media-amazon.com/images/I/51KQ3RBMAiL.jpg
+```
+
+**`amazon-sp fees B0GTNLGYB8 --price 29.99`** — total fees + breakdown FinalFee vs advertised:
+
+```
+  Fees estimate — ASIN B0GTNLGYB8 — US
+  Precio asumido : 29.99 USD     Fulfillment: FBA
+  Total fees     : 6.52 USD
+
+  Breakdown (FinalFee = lo realmente cobrado):
+    ReferralFee                       6.0 USD
+    FBAFees                           0.52 USD  (advertised: 3.86)
+      └ FBAPickAndPack                0.52 USD
+
+  Neto despues de fees : 23.47 USD  (78.3% del revenue, sin contar COGS)
+```
+
+> En el momento del test el `FBAFees.FinalFee` ($0.52) es mucho menor que el `FeeAmount`
+> advertised ($3.86) — Amazon estaba en una promo que dejaba solo el FBA Pick & Pack.
+> El CLI muestra ambos para que sepas si un cambio en la promo te haría subir los fees.
+
+**`amazon-sp reports list`** — históricos del seller, filtrados por tipos comunes:
+
+```
+  Reports — US — filtro: 6 tipos comunes — 20 encontrados
+  reportId       Tipo                                       Status   Creado
+  110885020596   GET_MERCHANT_LISTINGS_ALL_DATA             DONE     2026-05-23T12:16:05
+  110881020596   GET_FBA_MYI_UNSUPPRESSED_INVENTORY_DATA    DONE     2026-05-23T09:44:47
+  ...
+```
+
+**`amazon-sp feeds submit FILE --type X`** — dry-run por defecto, requiere `--confirm`:
+
+```
+  feeds submit — DRY RUN  (sin --confirm)
+  Archivo       : /tmp/test.json
+  Tamano        : 9 bytes
+  Feed type     : JSON_LISTINGS_FEED
+
+  Para realmente submittear este feed:
+    amazon-sp feeds submit /tmp/test.json --type JSON_LISTINGS_FEED --confirm
+
+  ATENCION: este comando MODIFICA tu cuenta Amazon …
+```
+
 ## Próximos comandos planificados
 
-Ver `Clients/pirojewelry.com/09_AMAZON/07_implementation-plan.md`:
-
-- `amazon-sp catalog get <ASIN>` — detalle completo de un ítem
-- `amazon-sp fees <ASIN>` — estimación referral + FBA fees
-- `amazon-sp reports list / get <id>` — historial de reports manuales
-- `amazon-sp feeds submit <file>` — carga masiva (>20 items)
-- `amazon-sp pricing autorepricer` — repricing con reglas (en evaluación)
+- `amazon-sp inventory sync --from shopify` — sync Shopify ↔ FBA stock
+- `amazon-sp pricing autorepricer --rules pricing.yaml` — reglas de repricing
+- `amazon-sp reports request <type>` / `get <id>` — descarga ad-hoc de reports
+- `amazon-sp orders cancel` (gated por `--confirm`) — cancelación de pedidos
+- AWS SQS + Notifications API — webhooks en tiempo real cuando volumen > 10/día
 
 ## Troubleshooting
 

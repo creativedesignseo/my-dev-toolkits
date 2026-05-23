@@ -54,6 +54,24 @@ MARKETPLACE_ALIASES = {
     "MX": "A1AM78C64UM0Y8",
 }
 
+# Tipos comunes para reports list / feeds list por defecto.
+# La API requiere reportTypes o feedTypes en cada llamada (no acepta consulta libre).
+COMMON_REPORT_TYPES = [
+    "GET_MERCHANT_LISTINGS_ALL_DATA",
+    "GET_FLAT_FILE_OPEN_LISTINGS_DATA",
+    "GET_FBA_MYI_UNSUPPRESSED_INVENTORY_DATA",
+    "GET_AMAZON_FULFILLED_SHIPMENTS_DATA_GENERAL",
+    "GET_FLAT_FILE_ALL_ORDERS_DATA_BY_LAST_UPDATE_GENERAL",
+    "GET_V1_SELLER_PERFORMANCE_REPORT",
+]
+
+COMMON_FEED_TYPES = [
+    # Solo el feed moderno por defecto. Los legacy POST_PRODUCT_DATA, etc. estan
+    # gated por rol y hacen fallar el batch entero con Unauthorized si no estan
+    # autorizados. Para consultar uno especifico: amazon-sp feeds list --type X
+    "JSON_LISTINGS_FEED",
+]
+
 
 # ─── Env loader ────────────────────────────────────────────────────────────────
 
@@ -184,6 +202,17 @@ def amazon_marketplace_domain(marketplace_name: str) -> str:
         "UK": "www.amazon.co.uk",
         "GB": "www.amazon.co.uk",
     }.get(marketplace_name, "www.amazon.com")
+
+
+def _guess_content_type(path: Path) -> str:
+    """Adivina content-type HTTP por extension del archivo a subir."""
+    return {
+        ".tsv":  "text/tab-separated-values; charset=UTF-8",
+        ".csv":  "text/csv; charset=UTF-8",
+        ".xml":  "text/xml; charset=UTF-8",
+        ".json": "application/json; charset=UTF-8",
+        ".txt":  "text/plain; charset=UTF-8",
+    }.get(path.suffix.lower(), "text/plain; charset=UTF-8")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -664,6 +693,350 @@ def cmd_catalog_search(args):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# CATALOG GET — detalle completo de un ASIN en el catalogo Amazon
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def cmd_catalog_get(args):
+    require_sp_api()
+
+    env              = load_env()
+    creds            = get_credentials(env)
+    marketplace, mid = resolve_marketplace(env, args.marketplace)
+
+    asin = args.asin.strip().upper()
+
+    from sp_api.api import CatalogItems
+    from sp_api.base.exceptions import SellingApiException
+
+    catalog = CatalogItems(credentials=creds, marketplace=marketplace, version="2022-04-01")
+
+    try:
+        result = catalog.get_catalog_item(
+            asin,
+            marketplaceIds=[mid],
+            includedData=[
+                "identifiers", "attributes", "summaries",
+                "salesRanks", "productTypes", "images",
+            ],
+        )
+    except SellingApiException as e:
+        die(f"get_catalog_item fallo:\n    {e}")
+
+    payload = result.payload or {}
+
+    if args.json:
+        out_json(payload)
+        return
+
+    summaries = payload.get("summaries") or []
+    s         = summaries[0] if summaries else {}
+    domain    = amazon_marketplace_domain(marketplace.name)
+
+    hr(f"Catalog item — {asin} — {marketplace.name}")
+    print(f"  Brand          : {s.get('brand','—')}")
+    print(f"  Title          : {short(s.get('itemName','—'), 90)}")
+    print(f"  Manufacturer   : {s.get('manufacturer','—')}")
+    print(f"  Color          : {s.get('color','—')}")
+    print(f"  Size           : {s.get('size','—')}")
+    print(f"  Model number   : {s.get('modelNumber','—')}")
+    print(f"  Classification : {s.get('itemClassification','—')}")
+
+    ptypes = payload.get("productTypes") or []
+    if ptypes:
+        pt_str = ", ".join(p.get("productType", "?") for p in ptypes[:3])
+        print(f"  Product type   : {pt_str}")
+
+    ranks = payload.get("salesRanks") or []
+    if ranks:
+        print()
+        print("  Sales Ranks:")
+        for r in ranks[:2]:
+            for cr in (r.get("classificationRanks") or [])[:3]:
+                print(f"    #{cr.get('rank','?'):<8} in {short(cr.get('title','?'), 70)}")
+            for dr in (r.get("displayGroupRanks") or [])[:3]:
+                print(f"    #{dr.get('rank','?'):<8} in {short(dr.get('title','?'), 70)}")
+
+    images = payload.get("images") or []
+    if images:
+        first = images[0]
+        imgs  = first.get("images") or []
+        if imgs:
+            print()
+            print(f"  Imagen principal : {imgs[0].get('link','—')}")
+
+    print()
+    print(f"  Producto       : https://{domain}/dp/{asin}")
+    print()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# FEES — estimacion referral + FBA fees para un ASIN dado un precio
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def cmd_fees(args):
+    require_sp_api()
+
+    env              = load_env()
+    creds            = get_credentials(env)
+    marketplace, mid = resolve_marketplace(env, args.marketplace)
+
+    asin     = args.asin.strip().upper()
+    is_fba   = not args.no_fba
+    currency = args.currency or "USD"
+
+    from sp_api.api import ProductFees
+    from sp_api.base.exceptions import SellingApiException
+
+    fees_client = ProductFees(credentials=creds, marketplace=marketplace)
+
+    try:
+        result = fees_client.get_product_fees_estimate_for_asin(
+            asin,
+            price=args.price,
+            shipping_price=args.shipping or 0,
+            currency=currency,
+            is_fba=is_fba,
+            marketplace_id=mid,
+        )
+    except SellingApiException as e:
+        die(f"get_product_fees_estimate_for_asin fallo:\n    {e}")
+
+    payload    = result.payload or {}
+    fee_result = payload.get("FeesEstimateResult") or {}
+    estimate   = fee_result.get("FeesEstimate") or {}
+
+    if args.json:
+        out_json(payload)
+        return
+
+    if not estimate:
+        err = fee_result.get("Error")
+        if err:
+            die(f"Amazon devolvio un error de fees:\n    "
+                f"{err.get('Code','?')} — {err.get('Message','?')}")
+        die("Sin estimate y sin error explicito. Revisa con --json.")
+
+    total = estimate.get("TotalFeesEstimate") or {}
+    items = estimate.get("FeeDetailList")    or []
+
+    hr(f"Fees estimate — ASIN {asin} — {marketplace.name}")
+    print(f"  Precio asumido : {args.price} {currency}")
+    print(f"  Shipping       : {args.shipping or 0} {currency}")
+    print(f"  Fulfillment    : {'FBA' if is_fba else 'MFN (Seller fulfilled)'}")
+    print()
+    print(f"  Total fees     : {total.get('Amount','?')} {total.get('CurrencyCode','')}")
+    print()
+    print("  Breakdown (FinalFee = lo realmente cobrado; entre parentesis el FeeAmount")
+    print("  advertised si difiere por promos/discounts):")
+    for fee in items:
+        ft       = fee.get("FeeType","?")
+        final    = fee.get("FinalFee") or {}
+        advert   = fee.get("FeeAmount") or {}
+        fin_amt  = final.get("Amount", "?")
+        fin_curr = final.get("CurrencyCode", "")
+        adv_amt  = advert.get("Amount", "?")
+
+        note = ""
+        if fin_amt != adv_amt and adv_amt not in ("?", None):
+            note = f"  (advertised: {adv_amt})"
+
+        print(f"    {ft:<32}  {fin_amt:>8} {fin_curr}{note}")
+
+        # Subitems (eg. FBAFees → FBAWeightHandling, FBAPickAndPack, etc.)
+        for sub in (fee.get("IncludedFeeDetailList") or []):
+            st  = sub.get("FeeType","?")
+            sa  = (sub.get("FinalFee") or sub.get("FeeAmount") or {}).get("Amount","?")
+            sc  = (sub.get("FinalFee") or sub.get("FeeAmount") or {}).get("CurrencyCode","")
+            print(f"      └ {st:<28}  {sa:>8} {sc}")
+
+    try:
+        net = float(args.price) - float(total.get("Amount", 0) or 0)
+        margin_pct = (net / float(args.price)) * 100 if float(args.price) > 0 else 0
+        print()
+        print(f"  Neto despues de fees : {net:.2f} {currency}  "
+              f"({margin_pct:.1f}% del revenue, sin contar COGS)")
+    except (ValueError, TypeError):
+        pass
+    print()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# REPORTS LIST — reports recientes generados (read-only)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def cmd_reports_list(args):
+    require_sp_api()
+
+    env              = load_env()
+    creds            = get_credentials(env)
+    marketplace, mid = resolve_marketplace(env, args.marketplace)
+
+    from sp_api.api import Reports
+    from sp_api.base.exceptions import SellingApiException
+
+    reports_client = Reports(credentials=creds, marketplace=marketplace)
+    types = [args.type] if args.type else COMMON_REPORT_TYPES
+
+    try:
+        result = reports_client.get_reports(
+            reportTypes=types,
+            marketplaceIds=[mid],
+            pageSize=min(args.limit or 20, 100),
+        )
+    except SellingApiException as e:
+        die(f"get_reports fallo:\n    {e}")
+
+    payload = result.payload or {}
+    reports = payload.get("reports") or []
+
+    if args.json:
+        out_json(reports)
+        return
+
+    filter_label = args.type if args.type else f"{len(types)} tipos comunes"
+    hr(f"Reports — {marketplace.name} — filtro: {filter_label} — {len(reports)} encontrados")
+
+    if not reports:
+        print("  (sin reports recientes para los tipos consultados)")
+        if not args.type:
+            print(f"  Tipos consultados: {', '.join(types)}")
+        return
+
+    print(f"  {'reportId':<14} {'Tipo':<48} {'Status':<12} Creado")
+    print(f"  {'─'*14} {'─'*48} {'─'*12} {'─'*19}")
+    for r in reports:
+        rid = r.get("reportId", "?")
+        rt  = short(r.get("reportType", "?"), 48)
+        st  = short(r.get("processingStatus", "?"), 12)
+        cr  = (r.get("createdTime", "") or "")[:19]
+        print(f"  {rid:<14} {rt:<48} {st:<12} {cr}")
+    print()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# FEEDS LIST — feeds recientes submitidos (read-only)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def cmd_feeds_list(args):
+    require_sp_api()
+
+    env              = load_env()
+    creds            = get_credentials(env)
+    marketplace, mid = resolve_marketplace(env, args.marketplace)
+
+    from sp_api.api import Feeds
+    from sp_api.base.exceptions import SellingApiException
+
+    feeds_client = Feeds(credentials=creds, marketplace=marketplace)
+    types = [args.type] if args.type else COMMON_FEED_TYPES
+
+    try:
+        result = feeds_client.get_feeds(
+            feedTypes=types,
+            marketplaceIds=[mid],
+            pageSize=min(args.limit or 20, 100),
+        )
+    except SellingApiException as e:
+        die(f"get_feeds fallo:\n    {e}")
+
+    payload = result.payload or {}
+    feeds   = payload.get("feeds") or []
+
+    if args.json:
+        out_json(feeds)
+        return
+
+    filter_label = args.type if args.type else f"{len(types)} tipos comunes"
+    hr(f"Feeds — {marketplace.name} — filtro: {filter_label} — {len(feeds)} encontrados")
+
+    if not feeds:
+        print("  (sin feeds recientes para los tipos consultados)")
+        if not args.type:
+            print(f"  Tipos consultados: {', '.join(types)}")
+        return
+
+    print(f"  {'feedId':<14} {'Tipo':<36} {'Status':<12} Creado")
+    print(f"  {'─'*14} {'─'*36} {'─'*12} {'─'*19}")
+    for f in feeds:
+        fid = f.get("feedId", "?")
+        ft  = short(f.get("feedType", "?"), 36)
+        st  = short(f.get("processingStatus", "?"), 12)
+        cr  = (f.get("createdTime", "") or "")[:19]
+        print(f"  {fid:<14} {ft:<36} {st:<12} {cr}")
+    print()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# FEEDS SUBMIT — DESTRUCTIVO: carga masiva. Requiere --confirm.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def cmd_feeds_submit(args):
+    file_path = Path(args.file).expanduser().resolve()
+    if not file_path.exists():
+        die(f"Archivo no encontrado: {file_path}")
+    if not file_path.is_file():
+        die(f"No es un archivo regular: {file_path}")
+
+    size = file_path.stat().st_size
+
+    if not args.confirm:
+        hr("feeds submit — DRY RUN  (sin --confirm)")
+        print(f"  Archivo       : {file_path}")
+        print(f"  Tamano        : {size:,} bytes")
+        print(f"  Feed type     : {args.type}")
+        print(f"  Content-type  : {args.content_type or _guess_content_type(file_path)}")
+        print(f"  Marketplace   : {args.marketplace or '(default del .env)'}")
+        print()
+        print("  Para realmente submittear este feed:")
+        mp = f" --marketplace {args.marketplace}" if args.marketplace else ""
+        print(f"    amazon-sp feeds submit {file_path}{mp} \\")
+        print(f"      --type {args.type} --confirm")
+        print()
+        print("  ATENCION: este comando MODIFICA tu cuenta Amazon (precios, stock,")
+        print("  productos o imagenes segun el feed type). Verifica el archivo antes.")
+        return
+
+    # Real submit
+    require_sp_api()
+    env              = load_env()
+    creds            = get_credentials(env)
+    marketplace, mid = resolve_marketplace(env, args.marketplace)
+
+    from sp_api.api import Feeds
+    from sp_api.base.exceptions import SellingApiException
+
+    feeds_client = Feeds(credentials=creds, marketplace=marketplace)
+    content_type = args.content_type or _guess_content_type(file_path)
+
+    eprint(f"  → Subiendo {file_path.name} ({size:,} bytes) como {args.type}")
+    eprint(f"  → Content-type: {content_type}")
+
+    try:
+        with open(file_path, "rb") as f:
+            doc_resp, feed_resp = feeds_client.submit_feed(
+                feed_type=args.type,
+                file=f,
+                content_type=content_type,
+                marketplaceIds=[mid],
+            )
+    except SellingApiException as e:
+        die(f"submit_feed fallo:\n    {e}")
+
+    feed_id = (feed_resp.payload or {}).get("feedId")
+    doc_id  = (doc_resp.payload  or {}).get("feedDocumentId")
+
+    hr("✓ Feed submitted")
+    print(f"  feedId           : {feed_id}")
+    print(f"  feedDocumentId   : {doc_id}")
+    print(f"  Tipo             : {args.type}")
+    print(f"  Marketplace      : {marketplace.name}")
+    print()
+    print("  Verificar status (puede tardar minutos en procesarse):")
+    print(f"    amazon-sp feeds list --type {args.type}")
+    print()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # CONFIG — mostrar credenciales cargadas (enmascaradas)
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -706,15 +1079,20 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Ejemplos:
-  amazon-sp shop                              # info cuenta seller
-  amazon-sp inventory                         # stock FBA en marketplace base
-  amazon-sp inventory --marketplace CA        # stock FBA en Canada
-  amazon-sp listings                          # TODOS los listings (Active+Inactive+Incomplete)
-  amazon-sp orders --since 7daysAgo           # pedidos ultimos 7 dias
-  amazon-sp orders --since 30daysAgo --details # con buyer info via RDT (lento)
-  amazon-sp pricing B0XXXXXXX                 # tu precio + competencia + Buy Box
-  amazon-sp catalog search "silver necklace"  # top 10 catalogo Amazon
-  amazon-sp config show                       # credenciales (enmascaradas)
+  amazon-sp shop                                # info cuenta seller
+  amazon-sp inventory                           # stock FBA en marketplace base
+  amazon-sp inventory --marketplace CA          # stock FBA en Canada
+  amazon-sp listings                            # TODOS los listings (async Reports)
+  amazon-sp orders --since 7daysAgo             # pedidos ultimos 7 dias
+  amazon-sp orders --since 30daysAgo --details  # con buyer info via RDT (lento)
+  amazon-sp pricing B0XXXXXXX                   # tu precio + competencia + Buy Box
+  amazon-sp catalog search "silver necklace"    # top 10 catalogo Amazon
+  amazon-sp catalog get B0XXXXXXX               # detalle completo de un ASIN
+  amazon-sp fees B0XXXXXXX --price 29.99        # estimacion referral + FBA fees
+  amazon-sp reports list                        # reports historicos (read-only)
+  amazon-sp feeds list                          # feeds recientes (read-only)
+  amazon-sp feeds submit FILE --type X          # bulk feed (DESTRUCTIVO, requiere --confirm)
+  amazon-sp config show                         # credenciales (enmascaradas)
 
 Credenciales se leen desde .env.amazon en (primera que exista):
   ~/.env.amazon
@@ -756,11 +1134,62 @@ Credenciales se leen desde .env.amazon en (primera que exista):
     sp_pr.add_argument("asin", metavar="ASIN", help="ASIN Amazon (ej: B0XXXXXXX)")
 
     # ── catalog ────────────────────────────────────────────────────────────────
-    sp_cat     = sub.add_parser("catalog", help="Catalogo Amazon (busqueda global)")
+    sp_cat     = sub.add_parser("catalog", help="Catalogo Amazon (search / get)")
     sp_cat_sub = sp_cat.add_subparsers(dest="subcommand", required=True, metavar="SUBCOMMAND")
     sp_cat_s   = sp_cat_sub.add_parser("search", help="Buscar productos por keyword")
     _add_marketplace_flag(sp_cat_s)
     sp_cat_s.add_argument("query", metavar="QUERY", help="Keywords a buscar")
+
+    sp_cat_g = sp_cat_sub.add_parser("get", help="Detalle completo de un ASIN")
+    _add_marketplace_flag(sp_cat_g)
+    sp_cat_g.add_argument("asin", metavar="ASIN", help="ASIN Amazon (ej: B0XXXXXXX)")
+
+    # ── fees ───────────────────────────────────────────────────────────────────
+    sp_fees = sub.add_parser("fees", help="Estimacion referral + FBA fees para un ASIN")
+    _add_marketplace_flag(sp_fees)
+    sp_fees.add_argument("asin", metavar="ASIN")
+    sp_fees.add_argument("--price",    type=float, required=True,
+                         help="Precio de venta asumido (ej: 29.99)")
+    sp_fees.add_argument("--shipping", type=float, default=0.0,
+                         help="Costo de envio asumido (default 0)")
+    sp_fees.add_argument("--currency", default="USD", metavar="USD|MXN|CAD",
+                         help="Moneda (default USD)")
+    sp_fees.add_argument("--no-fba",   action="store_true",
+                         help="Asumir MFN (seller-fulfilled). Default: FBA.")
+
+    # ── reports ────────────────────────────────────────────────────────────────
+    sp_rep     = sub.add_parser("reports", help="Reports historicos (read-only)")
+    sp_rep_sub = sp_rep.add_subparsers(dest="subcommand", required=True, metavar="SUBCOMMAND")
+    sp_rep_l   = sp_rep_sub.add_parser("list", help="Listar reports recientes")
+    _add_marketplace_flag(sp_rep_l)
+    sp_rep_l.add_argument("--type", "-t", metavar="REPORT_TYPE",
+                          help="Filtrar por tipo (default: tipos comunes)")
+    sp_rep_l.add_argument("--limit", type=int, default=20, metavar="N",
+                          help="Maximo de resultados (default 20, max 100)")
+
+    # ── feeds ──────────────────────────────────────────────────────────────────
+    sp_f     = sub.add_parser("feeds", help="Bulk feeds (list / submit)")
+    sp_f_sub = sp_f.add_subparsers(dest="subcommand", required=True, metavar="SUBCOMMAND")
+
+    sp_f_l = sp_f_sub.add_parser("list", help="Listar feeds recientes")
+    _add_marketplace_flag(sp_f_l)
+    sp_f_l.add_argument("--type", "-t", metavar="FEED_TYPE",
+                        help="Filtrar por tipo (default: tipos comunes)")
+    sp_f_l.add_argument("--limit", type=int, default=20, metavar="N",
+                        help="Maximo de resultados (default 20)")
+
+    sp_f_s = sp_f_sub.add_parser(
+        "submit",
+        help="Submittear un feed (DESTRUCTIVO — requiere --confirm)",
+    )
+    _add_marketplace_flag(sp_f_s)
+    sp_f_s.add_argument("file", metavar="FILE", help="Ruta al archivo a subir (TSV/CSV/XML/JSON)")
+    sp_f_s.add_argument("--type", required=True, metavar="FEED_TYPE",
+                        help="Tipo de feed (ej: POST_PRODUCT_DATA, JSON_LISTINGS_FEED)")
+    sp_f_s.add_argument("--content-type", metavar="MIME",
+                        help="Override content-type HTTP (default: inferido por extension)")
+    sp_f_s.add_argument("--confirm", action="store_true",
+                        help="Confirmar submit real. Sin esto el comando hace dry-run.")
 
     # ── config ─────────────────────────────────────────────────────────────────
     sp_cfg     = sub.add_parser("config", help="Configuracion local")
@@ -772,13 +1201,18 @@ Credenciales se leen desde .env.amazon en (primera que exista):
     sub_ = getattr(args, "subcommand", None)
 
     dispatch = {
-        ("shop",      None):    cmd_shop,
-        ("inventory", None):    cmd_inventory,
-        ("listings",  None):    cmd_listings,
-        ("orders",    None):    cmd_orders,
-        ("pricing",   None):    cmd_pricing,
+        ("shop",      None):     cmd_shop,
+        ("inventory", None):     cmd_inventory,
+        ("listings",  None):     cmd_listings,
+        ("orders",    None):     cmd_orders,
+        ("pricing",   None):     cmd_pricing,
         ("catalog",   "search"): cmd_catalog_search,
-        ("config",    "show"):  cmd_config_show,
+        ("catalog",   "get"):    cmd_catalog_get,
+        ("fees",      None):     cmd_fees,
+        ("reports",   "list"):   cmd_reports_list,
+        ("feeds",     "list"):   cmd_feeds_list,
+        ("feeds",     "submit"): cmd_feeds_submit,
+        ("config",    "show"):   cmd_config_show,
     }
 
     fn = dispatch.get((cmd, sub_))
