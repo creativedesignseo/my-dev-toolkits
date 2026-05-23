@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Por si alguna vez se copia un .env por error
+.env
+.env.amazon
+.env.*.local
