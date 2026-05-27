@@ -21,6 +21,35 @@ El formato sigue [Keep a Changelog](https://keepachangelog.com/es-ES/1.0.0/) y e
 - Migración progresiva de los MCP de Node.js (`google-ads-manager`, `google-analytics-manager`, `google-tag-manager`, `google-merchant-manager`) al patrón de `google-apis/`.
 - Toolkit de SEO (auditorías técnicas, Lighthouse batch).
 - Scripts de deployment a Netlify / Vercel.
+- Más skills puras en `skills/`: posiblemente `seo-audit`, `client-onboarding`, `stripe-integration-audit`.
+- Workflow GitHub Actions para validar frontmatter de skills en PR.
+- Documentación de `amazon-sp-cli/` en README maestro (pendiente desde mayo).
+
+---
+
+## [2.2.0] — 27 de mayo de 2026
+
+> Estreno de la sección **`skills/`** del repo: skills puras de Claude Code (sin CLI ejecutable detrás), distribuibles vía `npx skills add`. Añadida licencia MIT.
+
+### 🟢 Añadido
+
+- **`skills/saas-audit/`** — Skill de auditoría production-readiness para SaaS. Orquesta 13 sub-agentes en paralelo (architecture, security, payments, database, admin, UI/UX, QA, SEO/perf, deploy, stack, legal + orchestrator + reporter) y produce `AUDIT_REPORT.md` con un Production Readiness Score 0-100 ponderado por área, hallazgos P0-P3 y roadmap por fases. Soporta tres modos (`full` / `quick` / `focus`). 18 archivos (~148KB).
+- **`skills/README.md`** — Documentación de la nueva sección, explica diferencia entre skills puras (en `skills/`) vs skills que acompañan a un CLI (en la carpeta del propio CLI).
+- **`LICENSE`** — MIT License explícita. Permite el uso público y reutilización del contenido del repo.
+
+### 🔄 Cambiado
+
+- **README.md**: nueva sección "🤖 Skills — Claude Code skills" tras "Inteligencia Artificial", con tabla de skills disponibles, comandos de instalación y enlaces. Tabla de "Vista rápida" actualizada para incluir `skills/`.
+
+### 🔗 Distribución pública
+
+Con esta versión, las skills puras del repo pueden instalarse desde cualquier proyecto Claude Code con:
+
+```bash
+npx skills add creativedesignseo/my-dev-toolkits --skill saas-audit -g
+```
+
+Es la primera versión del repo orientada explícitamente al ecosistema [skills.sh](https://skills.sh/).
 
 ---
 

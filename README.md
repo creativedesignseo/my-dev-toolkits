@@ -28,6 +28,7 @@ Cada carpeta es **una herramienta independiente** que puede usarse por separado.
 | [**shopify-admin-mcp**](#-shopify-admin-mcp) | Servidor MCP para gestionar tiendas Shopify (productos, stock, etc.) | MCP Node.js | 🟢 En producción |
 | [**image-optimizer**](#-image-optimizer) | Convierte imágenes pesadas (PNG/JPG) a WebP — reducción del 90-95% | Scripts Node.js | 🟢 En producción |
 | [**gemini-cli-tools**](#-gemini-cli-tools) | Configuraciones y prompts para el CLI de Gemini (Google IA) | Configs | 🟡 Borrador |
+| [**skills/**](#-skills--claude-code-skills) | Skills puras de Claude Code (orquestación de agentes, prompts especializados) — instalables con `npx skills add` | Claude Code Skills | 🟢 En producción |
 | [**deprecated/**](#%EF%B8%8F-deprecated--archivado-no-usar) | Herramientas antiguas que ya no se usan, conservadas como referencia | Archivo | ⚫ No usar |
 
 ---
@@ -180,6 +181,34 @@ gmail send \
 **Estado**: muy preliminar — solo la estructura, sin contenido. Se irá rellenando.
 
 📖 [Documentación interna](gemini-cli-tools/README.md)
+
+---
+
+## 🤖 Skills — Claude Code skills
+
+📁 [`skills/`](skills/) · 🟢 En producción
+
+**Qué hay aquí**: skills **puras** de Claude Code — orquestación de agentes, prompts especializados, plantillas de razonamiento. A diferencia del resto del repo (CLIs y MCP servers), estas skills no son código ejecutable: son instrucciones que Claude Code interpreta cuando coincide con la descripción de la skill.
+
+> 💡 Los `SKILL.md` que acompañan a CLIs (`shopify-admin-cli/SKILL.md`, `google-apis/SKILL.md`) viven **junto a su CLI** porque son consustanciales. Esta carpeta es para skills "puras" que **no acompañan a un CLI**.
+
+**Skills disponibles**:
+
+| Skill | Para qué sirve | Versión | Comando |
+|-------|----------------|---------|---------|
+| [**saas-audit**](skills/saas-audit/) | Auditoría production-readiness de SaaS con 13 agentes en paralelo. Genera `AUDIT_REPORT.md` con score 0-100, hallazgos P0-P3 y roadmap por fases. Optimizada para SaaS con Stripe/Paddle + Supabase/Firebase. | v0.1.0 | `/saas-audit` |
+
+**Instalación** (vía CLI oficial de skills):
+
+```bash
+# Una skill específica, global
+npx skills add creativedesignseo/my-dev-toolkits --skill saas-audit -g
+
+# Todas las skills del repo
+npx skills add creativedesignseo/my-dev-toolkits --all -g
+```
+
+📖 [Documentación interna](skills/README.md)
 
 ---
 
