@@ -1867,6 +1867,232 @@ def cmd_config_show(args):
 # MAIN / ARGPARSE
 # ═══════════════════════════════════════════════════════════════════════════════
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# ANALYTICS — Search Query Performance + Sales & Traffic (Brand Analytics)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _analytics_fetch(marketplace, mid, creds, report_type, start, end,
+                     report_options=None, timeout_s=900, poll_s=10):
+    """Crea un report analitico, espera a que termine y devuelve el JSON parseado.
+
+    Devuelve None si termina DONE pero sin documento (= no hay datos para ese
+    ASIN/periodo, que es distinto de un fallo).
+    """
+    from sp_api.api import Reports
+    from sp_api.base.exceptions import SellingApiException
+
+    rc = Reports(credentials=creds, marketplace=marketplace)
+
+    kwargs = dict(
+        reportType=report_type,
+        marketplaceIds=[mid],
+        dataStartTime=f"{start}T00:00:00Z",
+        dataEndTime=f"{end}T23:59:59Z",
+    )
+    if report_options:
+        kwargs["reportOptions"] = report_options
+
+    try:
+        resp = rc.create_report(**kwargs)
+    except SellingApiException as e:
+        die(f"create_report fallo:\n    {e}\n\n"
+            f"    Recuerda: WEEK = domingo a sabado, MONTH = mes natural completo.\n"
+            f"    Una peticion no puede cruzar dos periodos.")
+
+    rid = (resp.payload or {}).get("reportId")
+    if not rid:
+        die(f"create_report sin reportId: {resp.payload}")
+    eprint(f"  → reportId: {rid}  (los reports analiticos tardan 3-6 min)")
+
+    deadline = time.time() + timeout_s
+    last = {}
+    while time.time() < deadline:
+        last = rc.get_report(rid).payload or {}
+        st = last.get("processingStatus")
+        if st in ("DONE", "CANCELLED", "FATAL"):
+            eprint(f"  → {st}")
+            break
+        time.sleep(poll_s)
+
+    st = last.get("processingStatus")
+    if st != "DONE":
+        die(f"El report termino en {st or 'TIMEOUT'} (reportId {rid})")
+
+    doc_id = last.get("reportDocumentId")
+    if not doc_id:
+        return None
+
+    doc = rc.get_report_document(doc_id, download=True, decrypt=True)
+    p = doc.payload
+    body = p.get("document") if isinstance(p, dict) else p
+    return json.loads(body) if isinstance(body, str) else body
+
+
+def _money(x):
+    """Los importes vienen como {'amount': N, 'currencyCode': 'USD'} o sueltos."""
+    return x.get("amount") if isinstance(x, dict) else x
+
+
+def cmd_sqp(args):
+    """Search Query Performance — volumen real y embudo por consulta de busqueda."""
+    require_sp_api()
+
+    env              = load_env()
+    creds            = get_credentials(env)
+    marketplace, mid = resolve_marketplace(env, args.marketplace)
+
+    eprint(f"  → Search Query Performance — {args.asin} — "
+           f"{args.start} a {args.end} ({args.period})")
+
+    data = _analytics_fetch(
+        marketplace, mid, creds,
+        "GET_BRAND_ANALYTICS_SEARCH_QUERY_PERFORMANCE_REPORT",
+        args.start, args.end,
+        {"asin": args.asin, "reportPeriod": args.period},
+        timeout_s=args.timeout,
+    )
+
+    if data is None:
+        hr(f"Search Query Performance — {args.asin} — {marketplace.name}")
+        print("  (sin datos: el ASIN no aparecio en ninguna consulta ese periodo)")
+        print("  Los datos salen con varios dias de retraso — prueba un periodo anterior.")
+        print()
+        return
+
+    if args.json:
+        out_json(data)
+        return
+
+    rows = data.get("dataByAsin", [])
+    spec = data.get("reportSpecification", {})
+
+    hr(f"Search Query Performance — {args.asin} — {marketplace.name}")
+    print(f"  Periodo : {spec.get('dataStartTime')} a {spec.get('dataEndTime')}")
+    print(f"  Consultas donde aparece el ASIN: {len(rows)}\n")
+
+    if not rows:
+        print("  (report vacio)\n")
+        return
+
+    parsed = []
+    T = dict(imp=0, cl=0, ca=0, pu=0, mimp=0, mcl=0, mpu=0)
+    for r in rows:
+        q  = r.get("searchQueryData", {})
+        i  = r.get("impressionData", {})
+        c  = r.get("clickData", {})
+        ca = r.get("cartAddData", {})
+        pu = r.get("purchaseData", {})
+        parsed.append((
+            q.get("searchQuery", "?"),
+            q.get("searchQueryVolume", 0),
+            i.get("totalQueryImpressionCount", 0),
+            i.get("asinImpressionCount", 0),
+            c.get("asinClickCount", 0),
+            pu.get("asinPurchaseCount", 0),
+            _money(pu.get("totalMedianPurchasePrice")),
+        ))
+        T["imp"]  += i.get("asinImpressionCount", 0)
+        T["cl"]   += c.get("asinClickCount", 0)
+        T["ca"]   += ca.get("asinCartAddCount", 0)
+        T["pu"]   += pu.get("asinPurchaseCount", 0)
+        T["mimp"] += i.get("totalQueryImpressionCount", 0)
+        T["mcl"]  += c.get("totalClickCount", 0)
+        T["mpu"]  += pu.get("totalPurchaseCount", 0)
+
+    parsed.sort(key=lambda x: -x[1])
+    limit = args.limit or len(parsed)
+
+    print(f"  {'CONSULTA':<46}{'Volumen':>10}{'ImpMercado':>12}{'ImpTuyas':>10}"
+          f"{'Clics':>7}{'Compras':>9}{'PrecioMed':>11}")
+    print(f"  {'─'*46}{'─'*10}{'─'*12}{'─'*10}{'─'*7}{'─'*9}{'─'*11}")
+    for q, vol, mimp, aimp, clicks, purch, price in parsed[:limit]:
+        pr = f"${price:.2f}" if price else "—"
+        print(f"  {short(q, 45):<46}{vol:>10,}{mimp:>12,}{aimp:>10,}"
+              f"{clicks:>7,}{purch:>9,}{pr:>11}")
+    if limit < len(parsed):
+        print(f"  ... y {len(parsed)-limit} consultas mas (usa --limit 0 para todas)")
+
+    print(f"  {'─'*105}")
+    ctr_t = (T["cl"]  / T["imp"]  * 100) if T["imp"]  else 0.0
+    ctr_m = (T["mcl"] / T["mimp"] * 100) if T["mimp"] else 0.0
+    share = (T["imp"] / T["mimp"] * 100) if T["mimp"] else 0.0
+    print(f"  TUYO     impresiones={T['imp']:,}  clics={T['cl']:,}  "
+          f"carritos={T['ca']:,}  compras={T['pu']:,}")
+    print(f"  MERCADO  impresiones={T['mimp']:,}  clics={T['mcl']:,}  compras={T['mpu']:,}")
+    print(f"  CTR tuyo={ctr_t:.2f}%   CTR mercado={ctr_m:.2f}%   "
+          f"cuota de impresiones={share:.2f}%")
+    print()
+
+
+def cmd_traffic(args):
+    """Sales & Traffic — sesiones, page views y conversion por dia y por ASIN."""
+    require_sp_api()
+
+    env              = load_env()
+    creds            = get_credentials(env)
+    marketplace, mid = resolve_marketplace(env, args.marketplace)
+
+    eprint(f"  → Sales & Traffic — {args.start} a {args.end}")
+
+    data = _analytics_fetch(
+        marketplace, mid, creds,
+        "GET_SALES_AND_TRAFFIC_REPORT",
+        args.start, args.end,
+        timeout_s=args.timeout,
+    )
+
+    if data is None:
+        hr(f"Sales & Traffic — {marketplace.name}")
+        print("  (sin datos para ese periodo)\n")
+        return
+
+    if args.json:
+        out_json(data)
+        return
+
+    by_date = data.get("salesAndTrafficByDate", []) or []
+    by_asin = data.get("salesAndTrafficByAsin", []) or []
+
+    hr(f"Sales & Traffic — {marketplace.name} — {args.start} a {args.end}")
+
+    if by_date:
+        print(f"\n  POR DIA")
+        print(f"  {'Fecha':<12}{'Ventas':>12}{'Uds':>6}{'Sesiones':>10}"
+              f"{'PageViews':>11}{'BuyBox%':>9}")
+        print(f"  {'─'*12}{'─'*12}{'─'*6}{'─'*10}{'─'*11}{'─'*9}")
+        tv = tu = ts = tp = 0
+        for r in by_date:
+            s = r.get("salesByDate", {}); t = r.get("trafficByDate", {})
+            v = _money(s.get("orderedProductSales")) or 0
+            u = s.get("unitsOrdered", 0) or 0
+            se = t.get("sessions", 0) or 0
+            pv = t.get("pageViews", 0) or 0
+            bb = t.get("buyBoxPercentage", 0) or 0
+            tv += v; tu += u; ts += se; tp += pv
+            print(f"  {r.get('date','?'):<12}${v:>11,.2f}{u:>6,}{se:>10,}{pv:>11,}{bb:>8.1f}%")
+        print(f"  {'─'*60}")
+        conv = (tu / ts * 100) if ts else 0.0
+        print(f"  {'TOTAL':<12}${tv:>11,.2f}{tu:>6,}{ts:>10,}{tp:>11,}")
+        print(f"  Conversion (uds/sesiones): {conv:.2f}%")
+
+    if by_asin:
+        print(f"\n  POR ASIN  ({len(by_asin)} con actividad)")
+        print(f"  {'ASIN':<14}{'Sesiones':>10}{'PageViews':>11}{'Uds':>6}"
+              f"{'Conv%':>8}{'Ventas':>13}")
+        print(f"  {'─'*14}{'─'*10}{'─'*11}{'─'*6}{'─'*8}{'─'*13}")
+        rows = sorted(by_asin,
+                      key=lambda x: -(x.get("trafficByAsin", {}).get("sessions", 0) or 0))
+        for r in rows[: (args.limit or len(rows))]:
+            s = r.get("salesByAsin", {}); t = r.get("trafficByAsin", {})
+            asin = r.get("childAsin") or r.get("parentAsin") or "?"
+            conv = f"{t.get('unitSessionPercentage',0) or 0:.1f}%"
+            ventas = f"${_money(s.get('orderedProductSales')) or 0:,.2f}"
+            print(f"  {asin:<14}{t.get('sessions',0) or 0:>10,}"
+                  f"{t.get('pageViews',0) or 0:>11,}{s.get('unitsOrdered',0) or 0:>6,}"
+                  f"{conv:>8}{ventas:>13}")
+    print()
+
+
 def _add_marketplace_flag(parser):
     parser.add_argument(
         "--marketplace", "-m",
@@ -1906,6 +2132,16 @@ Ejemplos:
   amazon-sp aplus create my.json                # crea draft
   amazon-sp aplus apply <KEY> --asin <ASIN>     # linkea doc <-> ASIN
   amazon-sp aplus submit <KEY> --confirm        # envia a review Amazon (24-72h)
+
+  # Analytics (Brand Analytics — requiere Brand Registry)
+  amazon-sp sqp B0XXXXXXX 2026-07-26 2026-08-01   # volumen real y embudo por consulta
+  amazon-sp sqp B0XXXXXXX 2026-07-01 2026-07-31 --period MONTH
+  amazon-sp traffic 2026-07-26 2026-08-01         # sesiones y conversion por dia y ASIN
+  amazon-sp traffic 2026-07-26 2026-08-01 --json  # crudo, para guardar
+
+  Fechas: WEEK = domingo a sabado · MONTH = mes natural · QUARTER = trimestre.
+  Una peticion no puede cruzar dos periodos. Los datos salen con dias de retraso
+  y el report tarda 3-6 min en procesarse.
 
   amazon-sp config show                         # credenciales (enmascaradas)
 
@@ -2065,6 +2301,35 @@ Credenciales se leen desde .env.amazon en (primera que exista):
                          help="Solo emite feed para SKUs con drift de precio >= N%% (default 1)")
 
     # ── config ─────────────────────────────────────────────────────────────────
+    # ── sqp (Search Query Performance) ─────────────────────────────────────────
+    sp_sqp = sub.add_parser(
+        "sqp",
+        help="Search Query Performance: volumen real y embudo por consulta (Brand Analytics)",
+    )
+    sp_sqp.add_argument("asin", help="ASIN (o varios separados por espacio, max 200 chars)")
+    sp_sqp.add_argument("start", help="Inicio del periodo (YYYY-MM-DD)")
+    sp_sqp.add_argument("end", help="Fin del periodo (YYYY-MM-DD)")
+    sp_sqp.add_argument("--period", default="WEEK", choices=["WEEK", "MONTH", "QUARTER"],
+                        help="WEEK = domingo a sabado (default)")
+    sp_sqp.add_argument("--limit", type=int, default=25,
+                        help="Maximo de consultas a mostrar (0 = todas, default 25)")
+    sp_sqp.add_argument("--timeout", type=int, default=900,
+                        help="Segundos de espera al report (default 900)")
+    _add_marketplace_flag(sp_sqp)
+
+    # ── traffic (Sales & Traffic) ──────────────────────────────────────────────
+    sp_tr = sub.add_parser(
+        "traffic",
+        help="Sesiones, page views y conversion por dia y por ASIN",
+    )
+    sp_tr.add_argument("start", help="Inicio (YYYY-MM-DD)")
+    sp_tr.add_argument("end", help="Fin (YYYY-MM-DD)")
+    sp_tr.add_argument("--limit", type=int, default=25,
+                       help="Maximo de ASINs a mostrar (0 = todos, default 25)")
+    sp_tr.add_argument("--timeout", type=int, default=900,
+                       help="Segundos de espera al report (default 900)")
+    _add_marketplace_flag(sp_tr)
+
     sp_cfg     = sub.add_parser("config", help="Configuracion local")
     sp_cfg_sub = sp_cfg.add_subparsers(dest="subcommand", required=True, metavar="SUBCOMMAND")
     sp_cfg_sub.add_parser("show", help="Ver credenciales cargadas (enmascaradas)")
@@ -2094,6 +2359,8 @@ Credenciales se leen desde .env.amazon en (primera que exista):
         ("aplus",     "apply"):        cmd_aplus_apply,
         ("aplus",     "submit"):       cmd_aplus_submit,
         ("sync",      None):           cmd_sync,
+        ("sqp",       None):           cmd_sqp,
+        ("traffic",   None):           cmd_traffic,
         ("config",    "show"):         cmd_config_show,
     }
 

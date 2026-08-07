@@ -80,7 +80,23 @@ Marketplace IDs comunes:
 | `amazon-sp aplus create FILE` | Crea draft A+ desde JSON | `AplusContent.create_content_document` |
 | `amazon-sp aplus apply <KEY> --asin ASIN [...]` | Linkea document(s) a ASIN(s) | `AplusContent.post_content_document_asin_relations` |
 | `amazon-sp aplus submit <KEY> --confirm` | **DESTRUCTIVO**. Envía a review Amazon (24-72h). Sin `--confirm` = dry-run. | `AplusContent.post_content_document_approval_submission` |
+| `amazon-sp sqp ASIN START END` | **Search Query Performance**: por cada consulta donde aparece el ASIN, volumen real de búsqueda + impresiones/clics/carritos/compras **tuyos y del mercado** + precio mediano de compra | `Reports` + `GET_BRAND_ANALYTICS_SEARCH_QUERY_PERFORMANCE_REPORT` |
+| `amazon-sp traffic START END` | Sesiones, page views, unidades, conversión y Buy Box % por día y por ASIN | `Reports` + `GET_SALES_AND_TRAFFIC_REPORT` |
 | `amazon-sp config show` | Credenciales cargadas (enmascaradas) | — |
+
+### Analytics — reglas de fechas (Amazon las valida)
+
+`sqp` y `traffic` usan reports analíticos y Amazon es estricto con el rango:
+
+- `WEEK` → **domingo a sábado**, semana completa
+- `MONTH` → mes natural completo · `QUARTER` → trimestre natural completo
+- Una petición **no puede cruzar dos periodos**
+- Los datos salen con **varios días de retraso**. Si viene vacío, prueba un periodo anterior.
+- El report tarda **3-6 minutos** en procesarse (`IN_QUEUE` → `IN_PROGRESS` → `DONE`)
+- `sqp` requiere **Brand Registry**
+
+Un report que termina `DONE` **sin documento** significa "sin datos", no un fallo — el CLI
+lo distingue y lo dice.
 
 Flags globales:
 - `--json` (`-j`) → output JSON crudo para piping (`jq`, scripts, etc.)
