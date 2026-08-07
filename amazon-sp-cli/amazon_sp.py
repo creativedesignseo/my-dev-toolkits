@@ -1872,8 +1872,12 @@ def cmd_config_show(args):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def _analytics_fetch(marketplace, mid, creds, report_type, start, end,
-                     report_options=None, timeout_s=900, poll_s=10):
+                     report_options=None, timeout_s=900, poll_s=10,
+                     report_id=None, cmd_hint="sqp"):
     """Crea un report analitico, espera a que termine y devuelve el JSON parseado.
+
+    Si se pasa `report_id`, no crea nada: recupera uno ya lanzado. Util cuando
+    una espera anterior expiro — el report sigue procesandose en Amazon.
 
     Devuelve None si termina DONE pero sin documento (= no hay datos para ese
     ASIN/periodo, que es distinto de un fallo).
@@ -1883,26 +1887,31 @@ def _analytics_fetch(marketplace, mid, creds, report_type, start, end,
 
     rc = Reports(credentials=creds, marketplace=marketplace)
 
-    kwargs = dict(
-        reportType=report_type,
-        marketplaceIds=[mid],
-        dataStartTime=f"{start}T00:00:00Z",
-        dataEndTime=f"{end}T23:59:59Z",
-    )
-    if report_options:
-        kwargs["reportOptions"] = report_options
+    if report_id:
+        rid = report_id
+        eprint(f"  → recuperando reportId {rid} (sin crear uno nuevo)")
+    else:
+        kwargs = dict(
+            reportType=report_type,
+            marketplaceIds=[mid],
+            dataStartTime=f"{start}T00:00:00Z",
+            dataEndTime=f"{end}T23:59:59Z",
+        )
+        if report_options:
+            kwargs["reportOptions"] = report_options
 
-    try:
-        resp = rc.create_report(**kwargs)
-    except SellingApiException as e:
-        die(f"create_report fallo:\n    {e}\n\n"
-            f"    Recuerda: WEEK = domingo a sabado, MONTH = mes natural completo.\n"
-            f"    Una peticion no puede cruzar dos periodos.")
+        try:
+            resp = rc.create_report(**kwargs)
+        except SellingApiException as e:
+            die(f"create_report fallo:\n    {e}\n\n"
+                f"    Recuerda: WEEK = domingo a sabado, MONTH = mes natural completo,\n"
+                f"    QUARTER = trimestre natural. Una peticion no puede cruzar dos periodos.")
 
-    rid = (resp.payload or {}).get("reportId")
-    if not rid:
-        die(f"create_report sin reportId: {resp.payload}")
-    eprint(f"  → reportId: {rid}  (los reports analiticos tardan 3-6 min)")
+        rid = (resp.payload or {}).get("reportId")
+        if not rid:
+            die(f"create_report sin reportId: {resp.payload}")
+        eprint(f"  → reportId: {rid}  (los reports analiticos tardan 3-6 min; "
+               f"QUARTER puede pasar de 20)")
 
     deadline = time.time() + timeout_s
     last = {}
@@ -1916,7 +1925,11 @@ def _analytics_fetch(marketplace, mid, creds, report_type, start, end,
 
     st = last.get("processingStatus")
     if st != "DONE":
-        die(f"El report termino en {st or 'TIMEOUT'} (reportId {rid})")
+        die(f"El report no ha terminado (status {st or 'TIMEOUT'}).\n\n"
+            f"    NO se ha perdido: sigue procesandose en Amazon.\n"
+            f"    Recuperalo cuando quieras, sin volver a lanzarlo:\n\n"
+            f"        amazon-sp {cmd_hint} ... --report-id {rid}\n\n"
+            f"    O sube la espera con --timeout 1800.")
 
     doc_id = last.get("reportDocumentId")
     if not doc_id:
@@ -1950,6 +1963,8 @@ def cmd_sqp(args):
         args.start, args.end,
         {"asin": args.asin, "reportPeriod": args.period},
         timeout_s=args.timeout,
+        report_id=getattr(args, "report_id", None),
+        cmd_hint="sqp",
     )
 
     if data is None:
@@ -2039,6 +2054,8 @@ def cmd_traffic(args):
         "GET_SALES_AND_TRAFFIC_REPORT",
         args.start, args.end,
         timeout_s=args.timeout,
+        report_id=getattr(args, "report_id", None),
+        cmd_hint="traffic",
     )
 
     if data is None:
@@ -2315,6 +2332,9 @@ Credenciales se leen desde .env.amazon en (primera que exista):
                         help="Maximo de consultas a mostrar (0 = todas, default 25)")
     sp_sqp.add_argument("--timeout", type=int, default=900,
                         help="Segundos de espera al report (default 900)")
+    sp_sqp.add_argument("--report-id", dest="report_id",
+                        help="Recupera un report ya lanzado en vez de crear uno nuevo "
+                             "(util si expiro la espera)")
     _add_marketplace_flag(sp_sqp)
 
     # ── traffic (Sales & Traffic) ──────────────────────────────────────────────
@@ -2328,6 +2348,9 @@ Credenciales se leen desde .env.amazon en (primera que exista):
                        help="Maximo de ASINs a mostrar (0 = todos, default 25)")
     sp_tr.add_argument("--timeout", type=int, default=900,
                        help="Segundos de espera al report (default 900)")
+    sp_tr.add_argument("--report-id", dest="report_id",
+                       help="Recupera un report ya lanzado en vez de crear uno nuevo "
+                            "(util si expiro la espera)")
     _add_marketplace_flag(sp_tr)
 
     sp_cfg     = sub.add_parser("config", help="Configuracion local")
